@@ -27,11 +27,47 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Webhook endpoint per Twilio (per ora solo test)
-app.post('/webhook/whatsapp', (req, res) => {
-  console.log('Webhook ricevuto:', req.body);
+// Webhook endpoint per messaggi WhatsApp con debug completo
+app.post('/webhook/whatsapp', async (req, res) => {
+  const { From, Body, WaId, ProfileName } = req.body;
   
-  // Per ora rispondiamo solo OK
+  console.log('=== DEBUG COMPLETO ===');
+  console.log('From originale:', From);
+  console.log('WaId:', WaId);
+  console.log('Body:', Body);
+  console.log('ProfileName:', ProfileName);
+  
+  const userPhone = From.replace('whatsapp:', '');
+  console.log('Numero estratto:', userPhone);
+  console.log('Numero finale da usare:', `whatsapp:${userPhone}`);
+  
+  console.log('Credenziali Twilio:');
+  console.log('ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? 'OK' : 'MANCANTE');
+  console.log('AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? 'OK' : 'MANCANTE');
+  console.log('WHATSAPP_NUMBER:', process.env.TWILIO_WHATSAPP_NUMBER);
+  
+  // Test di invio
+  try {
+    const twilio = require('twilio');
+    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    
+    console.log('Tentativo invio a:', `whatsapp:${userPhone}`);
+    
+    const result = await client.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: `whatsapp:${userPhone}`,
+      body: `Test risposta: ${Body}`
+    });
+    
+    console.log('✅ Successo! MessageID:', result.sid);
+    
+  } catch (error) {
+    console.log('❌ Errore dettagliato:', error.message);
+    console.log('Codice errore:', error.code);
+    console.log('Dettagli errore:', error);
+  }
+  
+  console.log('=== FINE DEBUG ===');
   res.status(200).send('OK');
 });
 
@@ -90,4 +126,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server Bot Remindly running on port ${PORT}`);
   console.log(`🔗 Webhook URL: http://localhost:${PORT}/webhook/whatsapp`);
+  console.log(`📱 Per testare: invia messaggio WhatsApp a +1 415 523 8886`);
 });
