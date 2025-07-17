@@ -1,24 +1,39 @@
 {
-  "name": "bot_remindly",
+  "name": "smart-sales-bot",
   "version": "1.0.0",
-  "description": "AI Sales Assistant per WhatsApp",
-  "main": "src/index.js",
+  "description": "Bot WhatsApp intelligente per vendite con AI e calendario integrato",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
-    "test": "jest"
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "setup": "node setup.js",
+    "test": "node test.js"
   },
+  "keywords": [
+    "whatsapp",
+    "bot", 
+    "sales",
+    "ai",
+    "calendar",
+    "twilio",
+    "openai"
+  ],
+  "author": "Il tuo nome",
+  "license": "MIT",
   "dependencies": {
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "googleapis": "^153.0.0",
-    "helmet": "^7.2.0",
-    "moment-timezone": "^0.6.0",
-    "openai": "^5.10.1",
-    "twilio": "^4.23.0"
+    "helmet": "^7.0.0",
+    "dotenv": "^16.3.1",
+    "openai": "^4.28.4",
+    "twilio": "^4.19.3",
+    "googleapis": "^126.0.1",
+    "moment-timezone": "^0.5.43"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }

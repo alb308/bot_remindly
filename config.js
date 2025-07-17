@@ -1,115 +1,124 @@
-// config.js - Configurazione per ogni cliente
+// config.js - Configurazione per Fitlab
+// Generato automaticamente il 17/07/2025
+
 module.exports = {
-  // Informazioni azienda
-  company: {
-    name: "Remindly",
-    product: "app di promemoria intelligente",
-    website: "https://remindly.app",
-    sector: "produttività"
-  },
-  
-  // Personalità del bot
-  bot: {
-    name: "Marco", // Nome umano del sales rep
-    role: "sales specialist",
-    tone: "professionale ma amichevole",
-    responseStyle: {
-      maxLength: 180, // Messaggi brevi e diretti
-      useEmoji: false,
-      useFormalLanguage: false,
-      personalTouch: true
-    }
-  },
-  
-  // Frasi e variazioni per sembrare più umano
-  phrases: {
-    greetings: [
-      "Ciao, sono Marco di Remindly",
-      "Salve, mi chiamo Marco",
-      "Buongiorno, sono Marco"
+  "business": {
+    "name": "Fitlab",
+    "description": "personal trainer, prenota la tua ora in palestra personale",
+    "industry": "Bodybuilding",
+    "website": "https://fitlab.com",
+    "services": [
+      "Slot orari",
+      "prezzi palestra abbonamenti"
     ],
-    
-    qualifying: [
-      "Posso chiederti in che settore lavori?",
-      "Di cosa si occupa la tua azienda?",
-      "In che ambito operate?",
-      "Che tipo di attività gestite?"
-    ],
-    
-    painPoints: [
-      "Quali sono le sfide principali nella gestione del tempo?",
-      "Come gestite attualmente i promemoria in azienda?",
-      "Avete problemi con scadenze dimenticate?",
-      "Quanto tempo perdete per organizzare le attività?"
-    ],
-    
-    proposing: [
-      "Ti va se fissiamo una chiamata veloce per capire meglio?",
-      "Possiamo fare una chiacchierata di 15 minuti questa settimana?",
-      "Hai 20 minuti per una demo personalizzata?",
-      "Quando saresti disponibile per una call?"
-    ],
-    
-    objectionHandling: {
-      noTime: "Capisco perfettamente. Anche solo 15 minuti possono fare la differenza. Che ne dici di giovedì?",
-      notInterested: "Ok, nessun problema. Se cambi idea sono qui.",
-      tooExpensive: "In realtà abbiamo piani molto flessibili. Vale la pena parlarne brevemente?",
-      alreadyHaveSolution: "Interessante. Cosa usate ora? Spesso i nostri clienti migrano proprio da quella soluzione."
-    },
-    
-    closing: [
-      "Perfetto, ti mando il link per il calendario",
-      "Ottimo, prenoto lo slot e ti invio conferma",
-      "Benissimo, blocco il tempo e ti scrivo i dettagli",
-      "Va bene, segno in agenda e ti confermo tutto"
+    "benefits": [
+      "automatizazzione"
     ]
   },
-  
-  // Obiettivi di vendita
-  salesProcess: {
-    stages: {
-      initial: {
-        goal: "Qualificare il lead",
-        questions: ["nome", "azienda", "ruolo"],
-        maxQuestions: 1 // Una domanda per volta
-      },
-      discovery: {
-        goal: "Capire le esigenze",
-        focus: ["problemi attuali", "soluzioni usate", "budget"],
-        maxQuestions: 1
-      },
-      demo: {
-        goal: "Fissare appuntamento",
-        trigger: ["interessato", "problemi identificati", "budget ok"],
-        action: "proporre slot calendario"
-      }
+  "personality": {
+    "name": "Giuseppe",
+    "role": "assisente",
+    "tone": "professionale ma amichevole",
+    "introduction": "Ciao! Sono Giuseppe di Fitlab. Ti aiuto a scoprire come personal trainer, prenota la tua ora in palestra personale può migliorare la tua situazione.",
+    "style": {
+      "useEmojis": false,
+      "maxMessageLength": 160,
+      "language": "italiano",
+      "formality": "tu",
+      "questions_per_message": 1
     }
   },
-  
-  // Risposte pre-costruite per velocità
-  quickResponses: {
-    outOfOfficeHours: "Scusa il ritardo, ti rispondo appena possibile domani mattina",
-    technicalIssue: "Mi spiace, ho avuto un problema tecnico. Ripartiamo da dove eravamo?",
-    notUnderstood: "Non ho capito bene. Puoi spiegarmi meglio?",
-    emailRequest: "Perfetto, qual è la tua email aziendale?"
-  },
-  
-  // Configurazione calendario
-  calendar: {
-    workingHours: {
-      start: 9,
-      end: 18,
-      timezone: "Europe/Rome"
+  "salesFlow": {
+    "qualification": {
+      "required": [
+        "name",
+        "company",
+        "role"
+      ],
+      "optional": [
+        "email",
+        "phone",
+        "team_size",
+        "current_tools"
+      ]
     },
-    slotDuration: 30, // minuti
-    availableDays: [1, 2, 3, 4, 5], // lun-ven
-    bufferTime: 24 // ore minime prima di un appuntamento
+    "questions": {
+      "name": "Come ti chiami?",
+      "company": "Per quale azienda lavori?",
+      "role": "Che ruolo ricopri?",
+      "pain_points": "Quali sono le tue principali sfide in questo ambito?",
+      "team_size": "Quante persone siete nel team?",
+      "budget": "Hai un budget definito per questa tipologia di strumenti?",
+      "timeline": "Quando vorresti implementare una soluzione?"
+    },
+    "stages": {
+      "welcome": "Immagino tu sia qui perché vuoi migliorare la tua personal trainer, prenota la tua ora in palestra personale, giusto?",
+      "qualifying": "Perfetto! Per consigliarti al meglio, dimmi:",
+      "presenting": "Basandomi su quello che mi hai detto, Fitlab può aiutarti a:",
+      "closing": "Ti va di fare una demo personalizzata? Posso mostrarti esattamente come risolveremmo i tuoi problemi specifici."
+    }
   },
-  
-  // Metriche da tracciare
-  tracking: {
-    qualifyingInfo: ["nome", "email", "azienda", "ruolo", "dipendenti"],
-    conversionEvents: ["demo_richiesta", "demo_fissata", "email_fornita"],
-    dropOffReasons: ["non_interessato", "già_soluzione", "troppo_costoso", "non_risponde"]
+  "calendar": {
+    "timezone": "italia",
+    "workingHours": {
+      "start": 6,
+      "end": 20
+    },
+    "workingDays": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "slotDuration": 30,
+    "availableSlots": [
+      9,
+      11,
+      14,
+      16
+    ],
+    "daysAhead": 7
+  },
+  "autoResponses": {
+    "fallback": "Non sono sicuro di aver capito. Puoi essere più specifico?",
+    "booking_confirmed": "Perfetto! Ho prenotato la demo per {date} alle {time}. Ti invierò tutti i dettagli via email.",
+    "no_slots": "Al momento non ho slot disponibili. Ti contatto via email per trovare un orario che funzioni per entrambi.",
+    "technical_error": "C'è stato un piccolo problema tecnico. Ti contatterò direttamente per la demo. Grazie per la pazienza!"
+  },
+  "triggers": {
+    "demo": [
+      "demo",
+      "chiamata",
+      "appuntamento",
+      "incontro",
+      "presentazione",
+      "mostrami"
+    ],
+    "pricing": [
+      "prezzo",
+      "costo",
+      "quanto costa",
+      "tariffe",
+      "piano"
+    ],
+    "features": [
+      "funzioni",
+      "caratteristiche",
+      "cosa fa",
+      "come funziona"
+    ],
+    "integration": [
+      "integrazione",
+      "collegare",
+      "connettere",
+      "sincronizzare"
+    ],
+    "competitor": [
+      "competitor",
+      "alternativa",
+      "vs",
+      "confronto"
+    ]
   }
 };
