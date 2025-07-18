@@ -16,7 +16,7 @@ logs/
 *.log
 
 # Runtime data
-pids
+pids/
 *.pid
 *.seed
 *.pid.lock
@@ -25,19 +25,32 @@ pids
 coverage/
 *.lcov
 
-# Build outputs
-dist/
-build/
+# Dependency directories
+.npm
+.eslintcache
 
-# IDE
+# Optional npm cache directory
+.npm
+
+# Google credentials (sensitive)
+google-credentials.json
+
+# IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+# Test files
+test-results/
+
+# Build files
+dist/
+build/
 
 # Temporary files
 tmp/
