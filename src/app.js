@@ -45,6 +45,22 @@ function getBotEngine(clientId) {
   
   return botEngines.get(clientId);
 }
+// Nel webhook, dopo getBotEngine:
+if (!botEngine) {
+  console.error(`❌ Cliente ${clientId} non configurato`);
+  console.log(`📁 Cercando file: ./config/clients/${clientId}.js`);
+  
+  // Lista file disponibili per debug
+  try {
+    const fs = require('fs');
+    const files = fs.readdirSync('./src/config/clients/');
+    console.log(`📂 File disponibili:`, files);
+  } catch (e) {
+    console.log(`❌ Errore lettura cartella clients:`, e.message);
+  }
+  
+  return res.status(404).json({ error: 'Cliente non trovato' });
+}
 
 // Funzione per inviare messaggi WhatsApp
 async function sendWhatsAppMessage(to, message) {
