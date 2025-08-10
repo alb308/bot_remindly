@@ -1,149 +1,66 @@
-import sqlite3
-from typing import Dict, Any, List, Optional
+import os
+from pymongo import MongoClient
+from pymongo.server_api import ServerApi
 
-class SQLiteCollection:
-    def __init__(self, conn: sqlite3.Connection, table: str):
-        self.conn = conn
-        self.table = table
+class MongoCollection:
+    def __init__(self, collection):
+        self.collection = collection
 
-    def find_one(self, query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not query:
-            return None
-        where_clause = " AND ".join([f"{k}=?" for k in query.keys()])
-        cur = self.conn.execute(f"SELECT * FROM {self.table} WHERE {where_clause} LIMIT 1", tuple(query.values()))
-        row = cur.fetchone()
-        return self._row_to_dict(cur, row) if row else None
+    def find_one(self, query):
+        return self.collection.find_one(query)
 
-    def find(self, query: Dict[str, Any] = None) -> List[Dict[str, Any]]:
-        if not query:
-            cur = self.conn.execute(f"SELECT * FROM {self.table}")
-        else:
-            where_clause = " AND ".join([f"{k}=?" for k in query.keys()])
-            cur = self.conn.execute(f"SELECT * FROM {self.table} WHERE {where_clause}", tuple(query.values()))
-        rows = cur.fetchall()
-        return [self._row_to_dict(cur, r) for r in rows]
+    def find(self, query={}):
+        return list(self.collection.find(query))
 
-    def insert_one(self, data: Dict[str, Any]):
-        keys = ", ".join(data.keys())
-        placeholders = ", ".join(["?" for _ in data])
-        cur = self.conn.execute(f"INSERT INTO {self.table} ({keys}) VALUES ({placeholders})", tuple(data.values()))
-        self.conn.commit()
-        return {"inserted_id": cur.lastrowid}
+    def insert_one(self, data):
+        result = self.collection.insert_one(data)
+        return {"inserted_id": result.inserted_id}
 
-    def update_one(self, query: Dict[str, Any], update: Dict[str, Any], upsert: bool=False):
-        # supporta formato tipo {"$set": {...}} o direttamente {...}
-        if "$set" in update: updates = update["$set"]
-        else: updates = update
-        set_clause = ", ".join([f"{k}=?" for k in updates.keys()])
-        where_clause = " AND ".join([f"{k}=?" for k in query.keys()])
-        params = tuple(updates.values()) + tuple(query.values())
-        self.conn.execute(f"UPDATE {self.table} SET {set_clause} WHERE {where_clause}", params)
-        self.conn.commit()
+    def update_one(self, query, update, upsert=False):
+        # Supporta il formato {"$set": ...}
+        self.collection.update_one(query, update, upsert=upsert)
 
-    def delete_one(self, query: Dict[str, Any]):
-        where_clause = " AND ".join([f"{k}=?" for k in query.keys()])
-        self.conn.execute(f"DELETE FROM {self.table} WHERE {where_clause}", tuple(query.values()))
-        self.conn.commit()
+    def delete_one(self, query):
+        self.collection.delete_one(query)
 
-    def count_documents(self, query: Dict[str, Any] = None) -> int:
-        if not query:
-            cur = self.conn.execute(f"SELECT COUNT(*) FROM {self.table}")
-        else:
-            where_clause = " AND ".join([f"{k}=?" for k in query.keys()])
-            cur = self.conn.execute(f"SELECT COUNT(*) FROM {self.table} WHERE {where_clause}", tuple(query.values()))
-        return cur.fetchone()[0]
-
-    def _row_to_dict(self, cur, row):
-        return dict(zip([d[0] for d in cur.description], row))
+    def count_documents(self, query={}):
+        return self.collection.count_documents(query)
 
 
-class SQLiteClient:
-    def __init__(self, db_path: str = "remindly.db"):
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self._init_tables()
+class MongoClientWrapper:
+    def __init__(self, db_uri: str, db_name: str = "remindly"):
+        try:
+            # Imposta la versione stabile dell'API
+            server_api = ServerApi('1')
+            self.client = MongoClient(db_uri, server_api=server_api)
+            self.db = self.client[db_name]
 
-        self.businesses = SQLiteCollection(self.conn, "businesses")
-        self.conversations = SQLiteCollection(self.conn, "conversations")
-        self.customers = SQLiteCollection(self.conn, "customers")
-        self.bookings = SQLiteCollection(self.conn, "bookings")
-        self.pending_bookings = SQLiteCollection(self.conn, "pending_bookings")
+            # Testa la connessione
+            self.client.admin.command('ping')
+            print("Connessione a MongoDB stabilita con successo!")
+
+            # Inizializza le collections
+            self.businesses = MongoCollection(self.db.businesses)
+            self.conversations = MongoCollection(self.db.conversations)
+            self.customers = MongoCollection(self.db.customers)
+            self.bookings = MongoCollection(self.db.bookings)
+            self.pending_bookings = MongoCollection(self.db.pending_bookings)
+
+        except Exception as e:
+            print(f"ERRORE: Impossibile connettersi a MongoDB: {e}")
+            self.client = None
 
     def get_database(self):
         return self
 
     def close(self):
-        self.conn.close()
+        if self.client:
+            self.client.close()
 
-    def _init_tables(self):
-        c = self.conn.cursor()
+# Esponi una singola istanza del client
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise Exception("ERRORE: La variabile d'ambiente MONGO_URI non è stata impostata.")
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS businesses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_name TEXT,
-            business_type TEXT,
-            twilio_phone_number TEXT UNIQUE,
-            address TEXT,
-            phone TEXT,
-            email TEXT,
-            website TEXT,
-            google_calendar_id TEXT,
-            booking_hours TEXT,
-            services TEXT,
-            opening_hours TEXT,
-            description TEXT,
-            booking_enabled INTEGER DEFAULT 1,
-            created_at TEXT,
-            updated_at TEXT
-        )""")
-
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS conversations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            business_id INTEGER,
-            messages TEXT,          -- JSON string (lista di {role,content,timestamp})
-            last_interaction TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            UNIQUE(user_id, business_id)
-        )""")
-
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            business_id INTEGER,
-            name TEXT,
-            email TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            UNIQUE(user_id, business_id)
-        )""")
-
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            business_id INTEGER,
-            booking_data TEXT,      -- JSON {date,time,duration,service_type,customer_name,customer_phone,notes}
-            status TEXT,
-            calendar_event_id TEXT,
-            created_at TEXT,
-            confirmed_at TEXT,
-            cancelled_at TEXT
-        )""")
-
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS pending_bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            business_id INTEGER,
-            booking_data TEXT,
-            status TEXT,
-            created_at TEXT,
-            expires_at TEXT
-        )""")
-
-        self.conn.commit()
+# Rinominiamo la classe per coerenza
+SQLiteClient = MongoClientWrapper(MONGO_URI)
