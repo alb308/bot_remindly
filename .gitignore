@@ -1,12 +1,5 @@
-# File di ambiente
 .env
-
-# Database locale
 remindly.db
-
-# Cache di Python
 __pycache__/
 *.pyc
-
-# Ambiente virtuale
 venv/
