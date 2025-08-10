@@ -4,11 +4,12 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 class BookingManager:
-    def __init__(self, sqlite_db):
+    def __init__(self, db_client):
         """
-        sqlite_db: istanza di SQLiteClient (db_sqlite.SQLiteClient)
+        db_client: istanza del client MongoDB (MongoClientWrapper)
         """
-        self.db = sqlite_db
+        # --- MODIFICA CHIAVE: ACCEDI DIRETTAMENTE ALLE COLLEZIONI DAL CLIENT ---
+        self.db = db_client
         self.bookings_collection = self.db.bookings
         self.pending_bookings = self.db.pending_bookings
 
@@ -16,7 +17,6 @@ class BookingManager:
         """Estrae l'intento di prenotazione dal messaggio"""
         message_lower = message.lower()
         
-        # Keywords per identificare intento
         booking_keywords = [
             'prenotare', 'prenoto', 'appuntamento', 'prenotazione',
             'disponibilità', 'libero', 'orario', 'quando', 'posso venire',
@@ -28,14 +28,14 @@ class BookingManager:
             'rimandare', 'cancel', 'delete'
         ]
         
-        # Determina intento
         intent = None
         if any(k in message_lower for k in booking_keywords):
             intent = 'book'
         elif any(k in message_lower for k in cancel_keywords):
             intent = 'cancel'
 
-        # Estrai data
+        # ... il resto del file rimane identico, lo includo per completezza ...
+
         date_patterns = [
             r'(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})',
             r'(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)',
@@ -52,7 +52,6 @@ class BookingManager:
                 extracted_date = m.group(0)
                 break
 
-        # Estrai orario
         time_patterns = [
             r'(\d{1,2})[:\.](\d{2})',
             r'alle\s+(\d{1,2})',
@@ -68,7 +67,6 @@ class BookingManager:
                 extracted_time = m.group(0)
                 break
 
-        # Identifica tipo di servizio
         service_keywords = {
             'taglio': ['taglio', 'capelli', 'parrucchiere', 'haircut'],
             'consulenza': ['consulenza', 'visita', 'controllo', 'consultation'],
@@ -95,7 +93,6 @@ class BookingManager:
         """Converte stringhe data/ora in oggetto datetime"""
         now = datetime.now()
         
-        # Gestisci date relative
         if date_str:
             date_lower = date_str.lower()
             if date_lower in ['oggi', 'today']:
@@ -105,9 +102,7 @@ class BookingManager:
             elif date_lower in ['dopodomani', 'day after tomorrow']:
                 target_date = (now + timedelta(days=2)).date()
             else:
-                # Prova a parsare data assoluta
                 try:
-                    # Prova diversi formati
                     for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
                         try:
                             target_date = datetime.strptime(date_str, fmt).date()
@@ -121,16 +116,13 @@ class BookingManager:
         else:
             target_date = now.date()
 
-        # Gestisci orario
         if time_str:
             time_lower = time_str.lower()
-            # Estrai numeri
             numbers = re.findall(r'\d+', time_str)
             if numbers:
                 hour = int(numbers[0])
                 minute = int(numbers[1]) if len(numbers) > 1 else 0
                 
-                # Aggiusta per am/pm o mattino/pomeriggio
                 if 'pm' in time_lower or 'pomeriggio' in time_lower:
                     if hour < 12:
                         hour += 12
@@ -165,12 +157,10 @@ class BookingManager:
     def confirm_booking(self, booking_id: int, calendar_event_id: str = None) -> bool:
         """Conferma una prenotazione pendente"""
         try:
-            # Trova prenotazione pendente
-            pending = self.pending_bookings.find_one({"id": booking_id})
+            pending = self.pending_bookings.find_one({"_id": booking_id}) # Usa _id per Mongo
             if not pending:
                 return False
             
-            # Crea prenotazione confermata
             confirmed = {
                 "user_id": pending["user_id"],
                 "business_id": pending["business_id"],
@@ -184,8 +174,7 @@ class BookingManager:
             
             self.bookings_collection.insert_one(confirmed)
             
-            # Rimuovi da pending
-            self.pending_bookings.delete_one({"id": booking_id})
+            self.pending_bookings.delete_one({"_id": booking_id}) # Usa _id per Mongo
             
             return True
         except Exception as e:
@@ -195,7 +184,6 @@ class BookingManager:
     def cancel_booking(self, user_id: str, business_id: int, booking_ref: str = None) -> Dict:
         """Cancella una prenotazione"""
         try:
-            # Cerca prenotazione da cancellare
             query = {
                 "user_id": user_id,
                 "business_id": business_id,
@@ -203,18 +191,13 @@ class BookingManager:
             }
             
             if booking_ref:
-                # Se c'è un riferimento specifico, cercalo nel booking_data
                 bookings = self.bookings_collection.find(query)
                 for booking in bookings:
                     data = json.loads(booking.get("booking_data", "{}"))
                     if booking_ref in str(data.get("date", "")) or booking_ref in str(data.get("time", "")):
-                        # Aggiorna stato
                         self.bookings_collection.update_one(
-                            {"id": booking["id"]},
-                            {
-                                "status": "cancelled",
-                                "cancelled_at": datetime.now().isoformat()
-                            }
+                            {"_id": booking["_id"]}, # Usa _id per Mongo
+                            {"$set": {"status": "cancelled", "cancelled_at": datetime.now().isoformat()}}
                         )
                         return {
                             "success": True, 
@@ -222,16 +205,12 @@ class BookingManager:
                             "booking_data": data
                         }
             else:
-                # Cancella l'ultima prenotazione
                 bookings = self.bookings_collection.find(query)
                 if bookings:
                     latest = sorted(bookings, key=lambda x: x.get("created_at", ""), reverse=True)[0]
                     self.bookings_collection.update_one(
-                        {"id": latest["id"]},
-                        {
-                            "status": "cancelled",
-                            "cancelled_at": datetime.now().isoformat()
-                        }
+                        {"_id": latest["_id"]}, # Usa _id per Mongo
+                        {"$set": {"status": "cancelled", "cancelled_at": datetime.now().isoformat()}}
                     )
                     return {
                         "success": True,
@@ -257,7 +236,6 @@ class BookingManager:
         
         bookings = self.bookings_collection.find(query)
         
-        # Decodifica booking_data per ogni prenotazione
         result = []
         for booking in bookings:
             booking["booking_data"] = json.loads(booking.get("booking_data", "{}"))
@@ -273,8 +251,8 @@ class BookingManager:
             
             for pending in expired:
                 if pending.get("expires_at", "") < now:
-                    self.pending_bookings.delete_one({"id": pending["id"]})
-                    print(f"🗑️ Rimossa prenotazione pendente scaduta: {pending['id']}")
+                    self.pending_bookings.delete_one({"_id": pending["_id"]}) # Usa _id per Mongo
+                    print(f"🗑️ Rimossa prenotazione pendente scaduta: {pending['_id']}")
                     
         except Exception as e:
             print(f"❌ Errore pulizia pending: {e}")
