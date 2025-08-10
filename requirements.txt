@@ -9,3 +9,4 @@ google-auth-httplib2==0.1.1
 pytz==2023.3
 APScheduler==3.10.4
 pymongo[srv]
+gunicorn
