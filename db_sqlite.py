@@ -11,23 +11,22 @@ class MongoClientWrapper:
         return cls._instance
 
     def __init__(self, db_uri: str = None):
-        # Evita di reinizializzare se già connesso
         if hasattr(self, 'client') and self.client:
             return
 
         uri = db_uri or os.getenv("MONGO_URI")
         if not uri:
-            raise Exception("ERRORE CRITICO: La variabile d'ambiente MONGO_URI non è impostata.")
+            # ERRORE 1: La variabile non è impostata su Railway
+            raise Exception("ERRORE CRITICO: La variabile d'ambiente MONGO_URI non è stata impostata.")
 
         try:
             server_api = ServerApi('1')
             self.client = MongoClient(uri, server_api=server_api)
-            # Testa la connessione
             self.client.admin.command('ping')
-            print("Connessione a MongoDB stabilita con successo!")
+            print("--- CONNESSIONE A MONGODB STABILITA CON SUCCESSO! ---")
             
-            # --- MODIFICA CHIAVE: ESPONI DIRETTAMENTE LE COLLEZIONI ---
-            db = self.client.remindly # Usa direttamente il nome del database
+            # Esponi le collection
+            db = self.client.remindly
             self.businesses = db.businesses
             self.conversations = db.conversations
             self.customers = db.customers
@@ -35,14 +34,10 @@ class MongoClientWrapper:
             self.pending_bookings = db.pending_bookings
 
         except Exception as e:
-            print(f"ERRORE: Impossibile connettersi a MongoDB: {e}")
-            self.client = None
-            # Assicura che gli attributi esistano anche in caso di errore per evitare AttributeError
-            self.businesses = None
-            self.conversations = None
-            self.customers = None
-            self.bookings = None
-            self.pending_bookings = None
+            # ERRORE 2: Errore di connessione (password, IP, etc.)
+            # Ora solleviamo un'eccezione per far crashare il deploy e vedere l'errore VERO.
+            print(f"--- ERRORE FATALE DI CONNESSIONE A MONGODB ---")
+            raise Exception(f"Impossibile connettersi a MongoDB: {e}")
 
 # Rinominiamo la classe per coerenza con il resto del codice
 SQLiteClient = MongoClientWrapper()
