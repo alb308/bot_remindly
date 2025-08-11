@@ -36,9 +36,7 @@ class CalendarService:
             target_date = datetime.strptime(date, '%Y-%m-%d').date()
             start_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=start_hour)))
             
-            # --- MODIFICA CHIAVE: Gestisce correttamente l'ora 24 ---
             if end_hour == 24:
-                # Se l'ora di fine è 24, imposta la fine a 23:59:59 di quel giorno
                 end_time = self.timezone.localize(datetime.combine(target_date, dtime(23, 59, 59)))
             else:
                 end_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=end_hour)))
@@ -76,19 +74,23 @@ class CalendarService:
             print(f"❌ Errore slot: {e}")
             return []
 
-    # Il resto del file (create_appointment, cancel_appointment) rimane invariato
     def create_appointment(self, date, start_time, duration_minutes, customer_name, customer_phone, service_type="Appuntamento", notes=""):
         if not self.service or not self.calendar_ids:
             return None
         try:
             start_dt = self.timezone.localize(datetime.strptime(f"{date} {start_time}", '%Y-%m-%d %H:%M'))
             end_dt = start_dt + timedelta(minutes=duration_minutes)
+
+            # --- MODIFICA CHIAVE: Pulisce il numero di telefono per creare un'email valida ---
+            clean_phone_for_email = customer_phone.replace('whatsapp:', '').replace('+', '')
+            attendee_email = f"{clean_phone_for_email}@whatsapp.local"
+            
             event = {
                 'summary': f"{service_type} - {customer_name}",
                 'description': f"Cliente: {customer_name}\nTelefono: {customer_phone}\nServizio: {service_type}\nNote: {notes}",
                 'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Europe/Rome'},
                 'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Europe/Rome'},
-                'attendees': [{'email': f"{customer_phone}@whatsapp.local", 'displayName': customer_name}],
+                'attendees': [{'email': attendee_email, 'displayName': customer_name}],
                 'reminders': {'useDefault': False, 'overrides': [{'method':'popup','minutes':60},{'method':'popup','minutes':15}]}
             }
             created_event = self.service.events().insert(calendarId=self.calendar_ids[0], body=event).execute()
