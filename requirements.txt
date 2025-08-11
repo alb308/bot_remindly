@@ -11,3 +11,4 @@ APScheduler==3.10.4
 pymongo[srv]
 gunicorn
 httpx<0.28
+thefuzz
