@@ -1,14 +1,10 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from google.oauth2.service_account import Credentials as ServiceCredentials
 from googleapiclient.discovery import build
 import pytz
 
 class CalendarService:
-    """
-    Supporta uno o più calendar_id (lista o stringa).
-    FreeBusy per calcolare disponibilità. Crea/cancella eventi.
-    """
     def __init__(self, calendar_id=None, service_account_key=None):
         if isinstance(calendar_id, list):
             self.calendar_ids = calendar_id
@@ -23,13 +19,7 @@ class CalendarService:
 
     def _init_service_account(self, service_account_key):
         try:
-            if isinstance(service_account_key, str) and service_account_key.startswith('{'):
-                creds_info = json.loads(service_account_key)
-            elif isinstance(service_account_key, str):
-                with open(service_account_key, 'r') as f:
-                    creds_info = json.load(f)
-            else:
-                creds_info = service_account_key
+            creds_info = json.loads(service_account_key) if isinstance(service_account_key, str) and service_account_key.startswith('{') else service_account_key
             credentials = ServiceCredentials.from_service_account_info(
                 creds_info, scopes=['https://www.googleapis.com/auth/calendar']
             )
@@ -43,10 +33,15 @@ class CalendarService:
         if not self.service or not self.calendar_ids:
             return []
         try:
-            from datetime import time as dtime
             target_date = datetime.strptime(date, '%Y-%m-%d').date()
             start_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=start_hour)))
-            end_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=end_hour)))
+            
+            # --- MODIFICA CHIAVE: Gestisce correttamente l'ora 24 ---
+            if end_hour == 24:
+                # Se l'ora di fine è 24, imposta la fine a 23:59:59 di quel giorno
+                end_time = self.timezone.localize(datetime.combine(target_date, dtime(23, 59, 59)))
+            else:
+                end_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=end_hour)))
 
             body = {
                 "timeMin": start_time.isoformat(),
@@ -54,12 +49,13 @@ class CalendarService:
                 "items": [{"id": cid} for cid in self.calendar_ids]
             }
             resp = self.service.freebusy().query(body=body).execute()
+            
             busy_intervals = []
             for cid in self.calendar_ids:
-                busy_intervals += resp.get("calendars", {}).get(cid, {}).get("busy", [])
+                busy_intervals.extend(resp.get("calendars", {}).get(cid, {}).get("busy", []))
 
-            def overlaps(s, e):
-                for b in busy_intervals:
+            def overlaps(s, e, busy_list):
+                for b in busy_list:
                     bs = datetime.fromisoformat(b["start"])
                     be = datetime.fromisoformat(b["end"])
                     if s < be and e > bs:
@@ -72,7 +68,7 @@ class CalendarService:
             dur = timedelta(minutes=duration_minutes)
             while cur + dur <= end_time:
                 e = cur + dur
-                if not overlaps(cur, e):
+                if not overlaps(cur, e, busy_intervals):
                     slots.append({'start': cur.strftime('%H:%M'), 'end': e.strftime('%H:%M'), 'datetime': cur.isoformat()})
                 cur += step
             return slots
@@ -80,6 +76,7 @@ class CalendarService:
             print(f"❌ Errore slot: {e}")
             return []
 
+    # Il resto del file (create_appointment, cancel_appointment) rimane invariato
     def create_appointment(self, date, start_time, duration_minutes, customer_name, customer_phone, service_type="Appuntamento", notes=""):
         if not self.service or not self.calendar_ids:
             return None

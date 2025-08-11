@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
@@ -97,7 +97,6 @@ def webhook():
         business_id = business['_id']
         user_id = from_number
         
-        # Recupera la cronologia della conversazione
         conversation = db.conversations.find_one({"user_id": user_id, "business_id": business_id})
         messages = []
         if conversation and 'messages' in conversation:
@@ -106,10 +105,12 @@ def webhook():
             except (json.JSONDecodeError, TypeError):
                 messages = []
         
-        # Logica di prenotazione: controlla se l'utente sta confermando un orario
         last_bot_message = messages[-1]['content'] if (messages and messages[-1]['role'] == 'assistant') else ""
-        is_booking_confirmation = "orari disponibili" in last_bot_message.lower() and re.search(r'\d{1,2}[:.]?\d{0,2}', incoming_msg)
         
+        booking_intent = booking_manager.extract_booking_intent(incoming_msg)
+        is_booking_confirmation = "orari disponibili" in last_bot_message.lower() and re.search(r'\d{1,2}[:.]?\d{0,2}', incoming_msg)
+        is_booking_request = booking_intent.get("intent") == "book" or booking_intent.get("date") is not None
+
         response_text = ""
 
         if is_booking_confirmation:
@@ -119,71 +120,58 @@ def webhook():
                 hour, minute = match.group(1), match.group(2) or "00"
                 selected_time = f"{hour.zfill(2)}:{minute.zfill(2)}"
                 print(f"Orario selezionato: {selected_time}")
-
                 calendar_service = get_calendar_service(business_id)
                 if calendar_service:
-                    today_str = datetime.now().strftime('%Y-%m-%d')
-                    event_id = calendar_service.create_appointment(
-                        date=today_str, start_time=selected_time, duration_minutes=60,
-                        customer_name=user_name, customer_phone=from_number,
-                        service_type="Appuntamento"
-                    )
-                    if event_id:
-                        print(f"--- Appuntamento creato su Google Calendar con ID: {event_id} ---")
-                        db.bookings.insert_one({
-                            "user_id": user_id, "business_id": business_id,
-                            "booking_data": json.dumps({"date": today_str, "time": selected_time}),
-                            "status": "confirmed", "calendar_event_id": event_id,
-                            "created_at": datetime.now().isoformat(), "confirmed_at": datetime.now().isoformat()
-                        })
-                        response_text = f"Perfetto! Il tuo appuntamento è confermato per oggi alle {selected_time}. A presto!"
+                    booking_date_str = last_bot_message.split("disponibili ")[-1].split(":")[0].strip()
+                    if "oggi" in booking_date_str:
+                        booking_date = datetime.now().strftime('%Y-%m-%d')
                     else:
-                        print("--- Errore durante la creazione dell'evento su Google Calendar ---")
-                        response_text = "Mi dispiace, si è verificato un errore nel fissare l'appuntamento. Riprova."
-                else:
-                    response_text = "Il servizio di calendario non è configurato correttamente."
-            else:
-                response_text = "Non ho capito l'orario. Puoi ripetere, per favore?"
-        
-        else: # Se non è una conferma, gestisci la richiesta normalmente
-            booking_intent = booking_manager.extract_booking_intent(incoming_msg)
-            if booking_intent.get("intent") == "book" and business.get("booking_enabled"):
-                print("--- Rilevato intento di prenotazione ---")
-                calendar_service = get_calendar_service(business_id)
-                if calendar_service:
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    bh = business.get("booking_hours", "9-18-60").split("-")
-                    start_h, end_h, dur = int(bh[0]), int(bh[1]), int(bh[2])
-                    slots = calendar_service.get_available_slots(today, duration_minutes=dur, start_hour=start_h, end_hour=end_h)
+                        try:
+                            # Tenta di parsare la data dal messaggio del bot. Es. "per il 12/08"
+                            parsed_date_obj = datetime.strptime(booking_date_str.replace("per il ", ""), "%d/%m")
+                            booking_date = parsed_date_obj.replace(year=datetime.now().year).strftime('%Y-%m-%d')
+                        except ValueError:
+                            booking_date = datetime.now().strftime('%Y-%m-%d')
                     
-                    if slots:
-                        response_text = "Certamente! Ecco gli orari disponibili per oggi:\n" + "\n".join([f"• {s['start']}" for s in slots[:5]])
-                        response_text += "\n\nQuale preferisci?"
+                    event_id = calendar_service.create_appointment(date=booking_date, start_time=selected_time, duration_minutes=60, customer_name=user_name, customer_phone=from_number, service_type="Appuntamento")
+                    if event_id:
+                        response_text = f"Perfetto! Il tuo appuntamento è confermato per le {selected_time}. A presto!"
                     else:
-                        response_text = "Mi dispiace, non ci sono più slot disponibili per oggi."
+                        response_text = "Mi dispiace, si è verificato un errore nel fissare l'appuntamento."
                 else:
-                    response_text = "Il servizio di prenotazione non è al momento disponibile."
-            
-            else: # Se non è un intento di prenotazione, usa l'AI
-                print("--- Nessun intento specifico rilevato, uso l'AI generica ---")
-                context = memory_service.build_context(user_id, business_id, messages)
-                memory_service.upsert_customer_profile(user_id, business_id, messages, incoming_msg)
-                response_text = get_ai_response(incoming_msg, business, context)
+                    response_text = "Il servizio di calendario non è configurato."
+            else:
+                response_text = "Non ho capito l'orario."
+
+        elif is_booking_request and business.get("booking_enabled"):
+            print("--- Rilevato intento di prenotazione ---")
+            calendar_service = get_calendar_service(business_id)
+            if calendar_service:
+                parsed_date = booking_manager.parse_datetime(booking_intent.get('date'))
+                target_date_str = parsed_date.strftime('%Y-%m-%d') if parsed_date else datetime.now().strftime('%Y-%m-%d')
+                
+                bh = business.get("booking_hours", "9-18-60").split("-")
+                start_h, end_h, dur = int(bh[0]), int(bh[1]), int(bh[2])
+                slots = calendar_service.get_available_slots(target_date_str, duration_minutes=dur, start_hour=start_h, end_hour=end_h)
+                
+                if slots:
+                    date_display = "oggi" if target_date_str == datetime.now().strftime('%Y-%m-%d') else f"per il {datetime.strptime(target_date_str, '%Y-%m-%d').strftime('%d/%m')}"
+                    response_text = f"Certamente! Ecco gli orari disponibili {date_display}:\n" + "\n".join([f"• {s['start']}" for s in slots[:5]])
+                    response_text += "\n\nQuale preferisci?"
+                else:
+                    response_text = "Mi dispiace, non ci sono slot disponibili per la data richiesta."
+            else:
+                response_text = "Il servizio di prenotazione non è al momento disponibile."
         
-        # Aggiorna la cronologia della conversazione e invia la risposta
+        else:
+            print("--- Nessun intento specifico rilevato, uso l'AI generica ---")
+            context = memory_service.build_context(user_id, business_id, messages)
+            memory_service.upsert_customer_profile(user_id, business_id, messages, incoming_msg)
+            response_text = get_ai_response(incoming_msg, business, context)
+        
         messages.append({"role": "user", "content": incoming_msg, "timestamp": datetime.now().isoformat()})
         messages.append({"role": "assistant", "content": response_text, "timestamp": datetime.now().isoformat()})
-
-        db.conversations.update_one(
-            {"user_id": user_id, "business_id": business_id},
-            {"$set": {
-                "messages": json.dumps(messages),
-                "last_interaction": datetime.now().isoformat(),
-                "user_id": user_id,
-                "business_id": business_id
-            }},
-            upsert=True
-        )
+        db.conversations.update_one({"user_id": user_id, "business_id": business_id}, {"$set": {"messages": json.dumps(messages), "last_interaction": datetime.now().isoformat(), "user_id": user_id, "business_id": business_id}}, upsert=True)
 
         print(f"--- Risposta inviata: '{response_text[:70]}...' ---")
         resp = MessagingResponse()
@@ -194,7 +182,6 @@ def webhook():
         print(f"--- ERRORE CRITICO E IMPREVISTO NEL WEBHOOK: {e} ---")
         import traceback
         traceback.print_exc()
-        # Invia un messaggio di errore generico all'utente
         resp = MessagingResponse()
         resp.message("Mi scuso, si è verificato un errore interno. Il team è stato notificato.")
         return Response(str(resp), mimetype='text/xml')
@@ -204,8 +191,6 @@ def health():
     """Endpoint per verificare che il servizio sia attivo."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}, 200
 
-# Questa parte viene eseguita solo quando avvii lo script direttamente sul tuo computer,
-# non quando viene eseguito da Gunicorn su Railway.
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Server avviato in modalità di sviluppo locale su http://localhost:{port}")
