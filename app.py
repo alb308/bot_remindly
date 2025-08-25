@@ -134,14 +134,67 @@ def webhook():
                             booking_date = datetime.now().strftime('%Y-%m-%d')
                     
                     event_id = calendar_service.create_appointment(date=booking_date, start_time=selected_time, duration_minutes=60, customer_name=user_name, customer_phone=from_number, service_type="Appuntamento")
+                    
                     if event_id:
                         response_text = f"Perfetto! Il tuo appuntamento è confermato per le {selected_time}. A presto!"
+                        # --- CODICE AGGIUNTO PER SALVARE LA PRENOTAZIONE ---
+                        booking_record = {
+                            "user_id": user_id, "business_id": business_id,
+                            "booking_data": json.dumps({
+                                "date": booking_date, "time": selected_time, "duration": 60,
+                                "customer_name": user_name, "customer_phone": from_number,
+                                "service_type": "Appuntamento"
+                            }),
+                            "status": "confirmed", "calendar_event_id": event_id,
+                            "created_at": datetime.now().isoformat(), "confirmed_at": datetime.now().isoformat()
+                        }
+                        db.bookings.insert_one(booking_record)
+                        print(f"✅ Prenotazione salvata nel DB con event_id: {event_id}")
+                        # --- FINE CODICE AGGIUNTO ---
                     else:
                         response_text = "Mi dispiace, si è verificato un errore nel fissare l'appuntamento."
                 else:
                     response_text = "Il servizio di calendario non è configurato."
             else:
                 response_text = "Non ho capito l'orario."
+
+        # --- NUOVO BLOCCO PER LA MODIFICA ---
+        elif booking_intent.get("intent") == "modify":
+            print("--- Rilevato intento di modifica ---")
+            last_booking = db.bookings.find_one({"user_id": user_id, "business_id": business_id, "status": "confirmed"}, sort=[("confirmed_at", -1)])
+            
+            if not last_booking:
+                response_text = "Non ho trovato una tua prenotazione recente da modificare. Vuoi crearne una nuova?"
+            else:
+                match = re.search(r'(\d{1,2})[:.]?(\d{0,2})', incoming_msg)
+                if match:
+                    hour, minute = match.group(1), match.group(2) or "00"
+                    new_time = f"{hour.zfill(2)}:{minute.zfill(2)}"
+                    print(f"Nuovo orario richiesto: {new_time}")
+
+                    calendar_service = get_calendar_service(business_id)
+                    booking_data = json.loads(last_booking['booking_data'])
+                    event_id = last_booking['calendar_event_id']
+
+                    updated_event_id = calendar_service.update_appointment(
+                        event_id=event_id,
+                        new_date=booking_data['date'],
+                        new_start_time=new_time,
+                        duration_minutes=booking_data.get('duration', 60)
+                    )
+
+                    if updated_event_id:
+                        response_text = f"Fatto! Ho spostato il tuo appuntamento alle {new_time}."
+                        booking_data['time'] = new_time
+                        db.bookings.update_one(
+                            {"_id": last_booking["_id"]},
+                            {"$set": {"booking_data": json.dumps(booking_data)}}
+                        )
+                    else:
+                        response_text = f"Mi dispiace, non è stato possibile spostare l'appuntamento alle {new_time}. Potrebbe essere un orario non disponibile."
+                else:
+                    response_text = "Non ho capito a che ora vorresti spostare l'appuntamento."
+        # --- FINE BLOCCO MODIFICA ---
 
         elif is_booking_request and business.get("booking_enabled"):
             print("--- Rilevato intento di prenotazione ---")
@@ -171,7 +224,8 @@ def webhook():
         
         messages.append({"role": "user", "content": incoming_msg, "timestamp": datetime.now().isoformat()})
         messages.append({"role": "assistant", "content": response_text, "timestamp": datetime.now().isoformat()})
-        db.conversations.update_one({"user_id": user_id, "business_id": business_id}, {"$set": {"messages": json.dumps(messages), "last_interaction": datetime.now().isoformat(), "user_id": user_id, "business_id": business_id}}, upsert=True)
+        db.conversations.update_one({"user_id": user_id, "business_id": business_id}, {"$set": {"messages": json.dumps(messages), "last_interaction": datetime.now().isoformat()}}, upsert=True)
+
 
         print(f"--- Risposta inviata: '{response_text[:70]}...' ---")
         resp = MessagingResponse()

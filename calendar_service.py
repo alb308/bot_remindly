@@ -94,6 +94,40 @@ class CalendarService:
             print(f"❌ Errore creazione evento: {e}")
             return None
 
+    # --- NUOVA FUNZIONE ---
+    def get_appointment(self, event_id):
+        if not self.service:
+            return None
+        try:
+            return self.service.events().get(calendarId=self.calendar_ids[0], eventId=event_id).execute()
+        except Exception as e:
+            print(f"❌ Errore nel recuperare evento {event_id}: {e}")
+            return None
+
+    # --- NUOVA FUNZIONE ---
+    def update_appointment(self, event_id, new_date, new_start_time, duration_minutes):
+        if not self.service:
+            return None
+        try:
+            event = self.get_appointment(event_id)
+            if not event:
+                return None
+
+            start_dt = self.timezone.localize(datetime.strptime(f"{new_date} {new_start_time}", '%Y-%m-%d %H:%M'))
+            end_dt = start_dt + timedelta(minutes=duration_minutes)
+
+            event['start']['dateTime'] = start_dt.isoformat()
+            event['end']['dateTime'] = end_dt.isoformat()
+
+            updated_event = self.service.events().update(
+                calendarId=self.calendar_ids[0], eventId=event_id, body=event
+            ).execute()
+            return updated_event.get('id')
+        except Exception as e:
+            print(f"❌ Errore aggiornamento evento: {e}")
+            return None
+
+
     def cancel_appointment(self, event_id):
         if not self.service or not self.calendar_ids:
             return False

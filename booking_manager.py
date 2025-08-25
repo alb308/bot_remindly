@@ -22,12 +22,22 @@ class BookingManager:
             'cancellare', 'cancello', 'disdire', 'annullare', 'rimandare'
         ]
         
+        # --- NUOVA SEZIONE ---
+        modify_keywords = [
+            'modificare', 'cambiare', 'spostare', 'invece', 'anzi', 
+            'facciamo', 'meglio alle'
+        ]
+        
         intent = None
         # Controlla se una delle parole chiave ha un'alta somiglianza parziale con il messaggio
         if any(fuzz.partial_ratio(k, message_lower) > 90 for k in booking_keywords):
             intent = 'book'
         elif any(fuzz.partial_ratio(k, message_lower) > 90 for k in cancel_keywords):
             intent = 'cancel'
+        # --- Rileva l'intento di modifica ---
+        elif any(fuzz.partial_ratio(k, message_lower) > 85 for k in modify_keywords) and re.search(r'\d', message_lower):
+             intent = 'modify'
+
 
         # ... il resto del file rimane identico ...
         date_patterns = [r'(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})',r'(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)',r'(oggi|domani|dopodomani)',r'(lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica)',r'(monday|tuesday|wednesday|thursday|friday|saturday|sunday)',r'(today|tomorrow)']
