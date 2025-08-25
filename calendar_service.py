@@ -81,16 +81,11 @@ class CalendarService:
             start_dt = self.timezone.localize(datetime.strptime(f"{date} {start_time}", '%Y-%m-%d %H:%M'))
             end_dt = start_dt + timedelta(minutes=duration_minutes)
 
-            # --- MODIFICA CHIAVE: Pulisce il numero di telefono per creare un'email valida ---
-            clean_phone_for_email = customer_phone.replace('whatsapp:', '').replace('+', '')
-            attendee_email = f"{clean_phone_for_email}@whatsapp.local"
-            
             event = {
                 'summary': f"{service_type} - {customer_name}",
                 'description': f"Cliente: {customer_name}\nTelefono: {customer_phone}\nServizio: {service_type}\nNote: {notes}",
                 'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Europe/Rome'},
                 'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Europe/Rome'},
-                'attendees': [{'email': attendee_email, 'displayName': customer_name}],
                 'reminders': {'useDefault': False, 'overrides': [{'method':'popup','minutes':60},{'method':'popup','minutes':15}]}
             }
             created_event = self.service.events().insert(calendarId=self.calendar_ids[0], body=event).execute()
