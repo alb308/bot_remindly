@@ -41,16 +41,25 @@ class CalendarService:
             else:
                 end_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=end_hour)))
 
-            body = {
-                "timeMin": start_time.isoformat(),
-                "timeMax": end_time.isoformat(),
-                "items": [{"id": cid} for cid in self.calendar_ids]
-            }
-            resp = self.service.freebusy().query(body=body).execute()
+            # --- LOGICA MODIFICATA: Usiamo events.list() invece di freebusy ---
+            events_result = self.service.events().list(
+                calendarId=self.calendar_ids[0], 
+                timeMin=start_time.isoformat(),
+                timeMax=end_time.isoformat(),
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
             
+            busy_events = events_result.get('items', [])
+            
+            # Formattiamo gli eventi occupati in un formato che la nostra logica capisce
             busy_intervals = []
-            for cid in self.calendar_ids:
-                busy_intervals.extend(resp.get("calendars", {}).get(cid, {}).get("busy", []))
+            for event in busy_events:
+                busy_intervals.append({
+                    'start': event['start'].get('dateTime', event['start'].get('date')),
+                    'end': event['end'].get('dateTime', event['end'].get('date'))
+                })
+            # --- FINE MODIFICA ---
 
             def overlaps(s, e, busy_list):
                 for b in busy_list:
@@ -94,7 +103,6 @@ class CalendarService:
             print(f"❌ Errore creazione evento: {e}")
             return None
 
-    # --- NUOVA FUNZIONE ---
     def get_appointment(self, event_id):
         if not self.service:
             return None
@@ -104,7 +112,6 @@ class CalendarService:
             print(f"❌ Errore nel recuperare evento {event_id}: {e}")
             return None
 
-    # --- NUOVA FUNZIONE ---
     def update_appointment(self, event_id, new_date, new_start_time, duration_minutes):
         if not self.service:
             return None
