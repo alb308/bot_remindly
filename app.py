@@ -209,7 +209,9 @@ def webhook():
                 
                 if slots:
                     date_display = "oggi" if target_date_str == datetime.now().strftime('%Y-%m-%d') else f"per il {datetime.strptime(target_date_str, '%Y-%m-%d').strftime('%d/%m')}"
-                    response_text = f"Certamente! Ecco gli orari disponibili {date_display}:\n" + "\n".join([f"• {s['start']}" for s in slots[:5]])
+                    
+                    # --- MODIFICA: Rimossa la limitazione [slots[:5]] ---
+                    response_text = f"Certamente! Ecco gli orari disponibili {date_display}:\n" + "\n".join([f"• {s['start']}" for s in slots])
                     response_text += "\n\nQuale preferisci?"
                 else:
                     response_text = "Mi dispiace, non ci sono slot disponibili per la data richiesta."
