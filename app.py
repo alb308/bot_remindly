@@ -17,7 +17,6 @@ db = SQLiteClient
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- Definizione degli "Strumenti" per l'AI ---
-# L'AI leggerà queste descrizioni per decidere quale funzione chiamare.
 tools = [
     {
         "type": "function",
@@ -80,9 +79,20 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # Recupera la cronologia della conversazione
+        # --- INIZIO CODICE CORRETTO PER CARICARE LA CRONOLOGIA ---
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
-        messages = conversation['messages'] if conversation and 'messages' in conversation else []
+        messages = []
+        if conversation and 'messages' in conversation:
+            # Controlla se i messaggi sono salvati come stringa JSON (vecchio formato)
+            if isinstance(conversation['messages'], str):
+                try:
+                    messages = json.loads(conversation['messages'])
+                except json.JSONDecodeError:
+                    messages = [] # Se la stringa non è JSON valido, inizia da capo
+            # Altrimenti, sono già una lista (nuovo formato)
+            elif isinstance(conversation['messages'], list):
+                messages = conversation['messages']
+        # --- FINE CODICE CORRETTO ---
         
         # Aggiungi il messaggio corrente alla cronologia per l'AI
         messages.append({"role": "user", "content": incoming_msg})
