@@ -15,6 +15,7 @@ db = SQLiteClient
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 tools = [
+    # Le definizioni degli strumenti rimangono identiche a prima
     {
         "type": "function",
         "function": {
@@ -76,31 +77,28 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
+        # 1. Carica la cronologia salvata
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = []
         if conversation and 'messages' in conversation:
-            if isinstance(conversation['messages'], str):
-                try: messages_history = json.loads(conversation['messages'])
-                except json.JSONDecodeError: messages_history = []
-            elif isinstance(conversation['messages'], list):
-                messages_history = conversation['messages']
+            messages_history = conversation.get('messages', [])
 
+        # 2. Prepara la sequenza di messaggi per l'API
         system_prompt = f"""
         Sei un assistente AI professionale per '{business.get('business_name')}', un'attività di tipo '{business.get('business_type')}'.
         Il tuo unico scopo è aiutare gli utenti a gestire le prenotazioni e a ricevere informazioni relative a questo business.
         REGOLE FONDAMENTALI:
         1. Focalizzati al 100% sui tuoi compiti: prenotare, modificare, cancellare appuntamenti e fornire informazioni.
         2. NON DEVI rispondere a domande non pertinenti (meteo, matematica, cultura generale, etc.).
-        3. Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile per riportare la conversazione in argomento, come: "Mi dispiace, non sono programmato per questo. Posso però aiutarti a prenotare o darti informazioni sui nostri servizi."
+        3. Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile per riportare la conversazione in argomento.
         """
         
-        # Aggiungi il messaggio dell'utente alla cronologia per questa interazione
-        current_interaction_messages = messages_history[-10:] # Lavora con una cronologia recente
-        current_interaction_messages.append({"role": "user", "content": incoming_msg})
+        # Crea la lista di messaggi per l'interazione corrente
+        api_messages = [{"role": "system", "content": system_prompt}]
+        api_messages.extend(messages_history[-10:])
+        api_messages.append({"role": "user", "content": incoming_msg})
 
-        # Prepara i messaggi per l'API, includendo sempre il prompt di sistema
-        api_messages = [{"role": "system", "content": system_prompt}] + current_interaction_messages
-
+        # 3. Prima chiamata all'AI per decidere l'azione
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=api_messages,
@@ -108,10 +106,9 @@ def webhook():
             tool_choice="auto",
         )
         response_message = response.choices[0].message
+        api_messages.append(response_message.model_dump(exclude_unset=True))
 
-        # Aggiungi la decisione dell'AI alla cronologia di questa interazione
-        current_interaction_messages.append(response_message.model_dump())
-
+        # 4. Se l'AI sceglie uno strumento, eseguilo
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
@@ -121,32 +118,31 @@ def webhook():
                 function_args['user_id'] = from_number
                 function_args['user_name'] = user_name
 
-                print(f"🧠 AI ha scelto di chiamare: {function_name} con {function_args}")
+                print(f"🧠 AI ha scelto di chiamare: {function_name}")
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
-                # Aggiungi il risultato del tool alla cronologia di questa interazione
-                current_interaction_messages.append({
+                api_messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": function_name,
                     "content": function_response,
                 })
             
-            # Prepara i messaggi per la seconda chiamata con il risultato del tool
-            second_api_messages = [{"role": "system", "content": system_prompt}] + current_interaction_messages
-            
+            # 5. Seconda chiamata all'AI per formulare la risposta finale
             second_response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=second_api_messages,
+                messages=api_messages,
             )
-            response_text = second_response.choices[0].message.content
+            final_response_text = second_response.choices[0].message.content
+            final_assistant_message_for_db = second_response.choices[0].message.model_dump(exclude_unset=True)
         else:
-            response_text = response_message.content
+            final_response_text = response_message.content
+            final_assistant_message_for_db = response_message.model_dump(exclude_unset=True)
 
-        # Aggiorna la cronologia principale con i messaggi di questa interazione
+        # 6. Aggiorna la cronologia da salvare nel database
         messages_history.append({"role": "user", "content": incoming_msg})
-        messages_history.append({"role": "assistant", "content": response_text})
+        messages_history.append(final_assistant_message_for_db)
 
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
@@ -154,9 +150,9 @@ def webhook():
             upsert=True
         )
 
-        print(f"--- Risposta inviata: '{response_text[:70]}...' ---")
+        print(f"--- Risposta inviata: '{final_response_text[:70]}...' ---")
         resp = MessagingResponse()
-        resp.message(response_text)
+        resp.message(final_response_text)
         return Response(str(resp), mimetype='text/xml')
 
     except Exception as e:
