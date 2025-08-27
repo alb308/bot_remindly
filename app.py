@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from datetime import datetime, timedelta
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
@@ -17,8 +18,14 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 tools = [
     {
         "type": "function", "function": {
-            "name": "get_available_slots", "description": "Trova gli orari disponibili per un servizio in una data.",
+            "name": "get_available_slots", "description": "Trova gli orari disponibili per un servizio in una data specifica.",
             "parameters": { "type": "object", "properties": { "service_name": {"type": "string"}, "date": {"type": "string"} }, "required": ["service_name", "date"] },
+        },
+    },
+    {
+        "type": "function", "function": {
+            "name": "get_next_available_slot", "description": "Trova il primo orario disponibile per un servizio (oggi o domani). Usa questa funzione quando l'utente dice 'prima possibile', 'il prima possibile', 'primo disponibile'.",
+            "parameters": { "type": "object", "properties": { "service_name": {"type": "string"} }, "required": ["service_name"] },
         },
     },
     {
@@ -44,16 +51,27 @@ tools = [
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
+        # Estrai dati immediatamente
         incoming_msg = request.values.get('Body', '').strip()
         from_number = request.values.get('From', '')
         to_number = request.values.get('To', '')
         user_name = request.values.get('ProfileName', 'Cliente')
 
+        # Log immediato per debug
+        print(f"🔵 WEBHOOK RICEVUTO: '{incoming_msg}' da {from_number} alle {datetime.now().strftime('%H:%M:%S')}")
+        
+        # Risposta immediata se il messaggio è vuoto
+        if not incoming_msg:
+            print("⚠️ Messaggio vuoto, ignoro")
+            return Response(status=200)
+
         business = db.businesses.find_one({"twilio_phone_number": to_number})
         if not business: 
-            print(f"Business non trovato per numero: {to_number}")
+            print(f"❌ Business non trovato per numero: {to_number}")
             return Response(status=200)
         business_id = business['_id']
+        
+        print(f"✅ Business trovato: {business.get('business_name')}")
 
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
@@ -63,14 +81,24 @@ def webhook():
         Il tuo unico scopo è gestire prenotazioni e dare informazioni su questo business.
         
         DATA ATTUALE: {datetime.now().strftime('%Y-%m-%d')} (oggi)
+        ORA ATTUALE: {datetime.now().strftime('%H:%M')}
         
         Regole importanti:
         - Quando l'utente dice "oggi", usa la data attuale: {datetime.now().strftime('%Y-%m-%d')}
         - Quando dice "domani", usa: {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
-        - Se menziona un orario senza data, chiedi sempre quale giorno intende
+        - Quando dice "il prima possibile", "prima possibile", "il primo disponibile":
+          1. Cerca prima gli slot disponibili per OGGI {datetime.now().strftime('%Y-%m-%d')}
+          2. Se non ci sono, prova domani {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
+          3. Proponi SUBITO il primo orario trovato senza chiedere conferma della data
+        - Se menziona solo un orario senza data, assumi OGGI se l'orario non è passato
         - Usa sempre il formato YYYY-MM-DD per le date nelle funzioni
-        - Sii breve, professionale e cordiale
+        - Sii breve, diretto e non chiedere conferme inutili
         - Se qualcuno chiede qualcosa che non riguarda prenotazioni, rispondi cortesemente che puoi aiutare solo con prenotazioni e informazioni sul servizio
+        
+        ESEMPI DI COMPORTAMENTO CORRETTO:
+        - User: "il prima possibile per un taglio" → Cerca subito oggi, se trovi slot proponi il primo
+        - User: "domani alle 10" → Controlla se le 10 sono disponibili domani
+        - User: "alle 15" → Assumi oggi se non sono ancora le 15, altrimenti chiedi quale giorno
         """
         
         # Costruisce la sequenza di messaggi per l'API
@@ -80,11 +108,18 @@ def webhook():
         api_messages.append({"role": "user", "content": incoming_msg})
 
         # Ciclo di conversazione con l'AI
-        max_iterations = 5  # Previeni loop infiniti
+        max_iterations = 3  # Ridotto per evitare timeout
         iteration = 0
+        start_time = time.time()
+        timeout_seconds = 25  # Timeout prima dei 30s di Twilio
         
         while iteration < max_iterations:
             iteration += 1
+            
+            # Controllo timeout
+            if time.time() - start_time > timeout_seconds:
+                final_response_text = "Sto elaborando la tua richiesta, ti rispondo tra poco."
+                break
             
             response = openai_client.chat.completions.create(
                 model="gpt-4o", 

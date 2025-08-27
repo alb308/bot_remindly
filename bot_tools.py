@@ -255,7 +255,81 @@ def cancel_booking(business_id: str, user_id: str, **kwargs):
         print(f"❌ Errore cancellazione: {e}")
         return "Errore temporaneo nella cancellazione. Riprova o contattaci direttamente."
 
-def get_business_info(business_id: str, **kwargs):
+def get_next_available_slot(business_id: str, service_name: str, **kwargs):
+    """Trova il primo orario disponibile per un servizio (oggi o domani)"""
+    business = db.businesses.find_one({"_id": business_id})
+    if not business:
+        return "Errore: business non trovato nel database."
+    
+    services = _get_services(business)
+    if not services:
+        return "Errore: non ci sono servizi configurati per questo business nel database."
+
+    selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
+    if not selected_service:
+        service_names = [s['name'] for s in services]
+        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {', '.join(service_names)}."
+
+    calendar_service = get_calendar_service(business_id)
+    if not calendar_service:
+        return "Servizio calendario non configurato."
+
+    booking_hours = business.get("booking_hours", "9-18")
+    try:
+        start_hour, end_hour = map(int, booking_hours.split("-"))
+    except (ValueError, AttributeError):
+        start_hour, end_hour = 9, 18
+
+    # Prova prima oggi
+    today = datetime.now().strftime('%Y-%m-%d')
+    try:
+        slots = calendar_service.get_available_slots(
+            date=today, 
+            duration_minutes=selected_service['duration'], 
+            start_hour=start_hour, 
+            end_hour=end_hour
+        )
+        
+        if slots:
+            # Filtra solo slot futuri (non nel passato)
+            current_time = datetime.now().time()
+            future_slots = []
+            for slot in slots:
+                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
+                if slot_time > current_time:
+                    future_slots.append(slot)
+            
+            if future_slots:
+                first_slot = future_slots[0]
+                return json.dumps({
+                    "date": today,
+                    "time": first_slot['start'],
+                    "message": f"Il primo orario disponibile è oggi alle {first_slot['start']}"
+                })
+    except Exception as e:
+        print(f"Errore controllo oggi: {e}")
+
+    # Se oggi non ha slot, prova domani
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    try:
+        slots = calendar_service.get_available_slots(
+            date=tomorrow, 
+            duration_minutes=selected_service['duration'], 
+            start_hour=start_hour, 
+            end_hour=end_hour
+        )
+        
+        if slots:
+            first_slot = slots[0]
+            return json.dumps({
+                "date": tomorrow,
+                "time": first_slot['start'],
+                "message": f"Il primo orario disponibile è domani alle {first_slot['start']}"
+            })
+    except Exception as e:
+        print(f"Errore controllo domani: {e}")
+
+    return "Non ci sono orari disponibili oggi o domani. Prova un'altra data."
     """Recupera le informazioni generali sul business"""
     business = db.businesses.find_one({"_id": business_id})
     if not business:
