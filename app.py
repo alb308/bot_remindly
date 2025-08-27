@@ -90,22 +90,40 @@ def webhook():
                     messages = []
             elif isinstance(conversation['messages'], list):
                 messages = conversation['messages']
+
+        # --- NUOVO "REGOLAMENTO INTERNO" PER L'AI ---
+        system_prompt = f"""
+        Sei un assistente AI professionale per '{business.get('business_name')}', un'attività di tipo '{business.get('business_type')}'.
+        Il tuo unico scopo è aiutare gli utenti a gestire le prenotazioni e a ricevere informazioni relative a questo business.
         
-        messages.append({"role": "user", "content": incoming_msg})
+        REGOLE FONDAMENTALI E OBBLIGATORIE:
+        1.  Focalizzati al 100% sui tuoi compiti: prenotare, modificare, cancellare appuntamenti e fornire informazioni (orari, servizi, indirizzo).
+        2.  NON DEVI rispondere a domande non pertinenti (off-topic). Questo include meteo, matematica, cultura generale, politica, sport, ecc.
+        3.  NON DEVI fare conversazione generica o chiacchiere. NON usare solo emoji per rispondere.
+        4.  Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile ma ferma per riportare la conversazione in argomento.
+            - Esempio di risposta corretta: "Mi dispiace, non sono programmato per questo. Posso però aiutarti a prenotare o darti informazioni sui nostri servizi."
+            - Esempio di risposta corretta: "Il mio ruolo è di assistente per le prenotazioni. Come posso aiutarti riguardo a '{business.get('business_name')}'?"
+        5.  Sii sempre cortese, professionale e vai dritto al punto.
+        """
+        
+        # Prepara la lista di messaggi per l'API, inserendo sempre il regolamento all'inizio
+        api_messages = [{"role": "system", "content": system_prompt}]
+        # Aggiungi solo gli ultimi 10 messaggi per mantenere il contesto senza appesantire
+        api_messages.extend(messages[-10:])
+        api_messages.append({"role": "user", "content": incoming_msg})
 
         # --- PRIMA CHIAMATA ALL'AI ---
         response = openai_client.chat.completions.create(
             model="gpt-4o",
-            messages=messages,
+            messages=api_messages,
             tools=tools,
             tool_choice="auto",
         )
         response_message = response.choices[0].message
         
-        # --- MODIFICA CHIAVE: Converti l'oggetto in dizionario prima di salvarlo ---
-        serializable_message = response_message.model_dump()
-        messages.append(serializable_message)
-        # --- FINE MODIFICA ---
+        # Aggiungi alla cronologia sia il messaggio dell'utente che la risposta dell'AI
+        messages.append({"role": "user", "content": incoming_msg})
+        messages.append(response_message.model_dump())
 
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
@@ -127,12 +145,18 @@ def webhook():
                     "content": function_response,
                 })
             
+            # Prepara una nuova lista di messaggi per la seconda chiamata
+            api_messages_for_second_call = [{"role": "system", "content": system_prompt}]
+            api_messages_for_second_call.extend(messages[-11:]) # Includi anche il risultato del tool
+
             # --- SECONDA CHIAMATA ALL'AI ---
             second_response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=messages,
+                messages=api_messages_for_second_call,
             )
             response_text = second_response.choices[0].message.content
+            # Aggiorna l'ultimo messaggio dell'assistente con la risposta finale
+            messages[-1] = second_response.choices[0].message.model_dump()
         else:
             response_text = response_message.content
 
