@@ -18,16 +18,18 @@ def get_calendar_service(business_id):
     return calendar_services.get(business_id)
 
 def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
-    """
-    Trova gli orari disponibili per un servizio specifico in una data specifica.
-    Usa questa funzione quando un utente chiede la disponibilità.
-    'date' deve essere in formato 'YYYY-MM-DD'.
-    """
     business = db.businesses.find_one({"_id": business_id})
-    services_str = business.get("services")
-    # Aggiunto controllo per stringa non vuota
-    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
+    services_data = business.get("services")
     
+    services = []
+    if isinstance(services_data, str) and services_data.strip():
+        try:
+            services = json.loads(services_data)
+        except json.JSONDecodeError:
+            services = []
+    elif isinstance(services_data, list):
+        services = services_data
+
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
         return f"Servizio '{service_name}' non trovato."
@@ -45,13 +47,17 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
     return json.dumps([s['start'] for s in slots])
 
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
-    """
-    Crea un nuovo appuntamento o aggiorna uno esistente se l'utente ne ha già uno per quella data.
-    'date' deve essere in formato 'YYYY-MM-DD', 'time' in formato 'HH:MM'.
-    """
     business = db.businesses.find_one({"_id": business_id})
-    services_str = business.get("services")
-    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
+    services_data = business.get("services")
+
+    services = []
+    if isinstance(services_data, str) and services_data.strip():
+        try:
+            services = json.loads(services_data)
+        except json.JSONDecodeError:
+            services = []
+    elif isinstance(services_data, list):
+        services = services_data
 
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
@@ -89,10 +95,6 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
     return f"Appuntamento per {service_name} confermato per il {date} alle {time}."
 
 def cancel_booking(business_id: str, user_id: str, **kwargs):
-    """
-    Cancella l'ultimo appuntamento confermato di un utente.
-    Usa questa funzione quando l'utente esprime l'intenzione di annullare, disdire o che ha un imprevisto.
-    """
     last_booking = db.bookings.find_one({"user_id": user_id, "business_id": business_id, "status": "confirmed"}, sort=[("confirmed_at", -1)])
     if not last_booking:
         return "Non ho trovato nessuna prenotazione attiva da cancellare."
@@ -105,16 +107,22 @@ def cancel_booking(business_id: str, user_id: str, **kwargs):
         return "Errore durante la cancellazione dell'appuntamento."
 
 def get_business_info(business_id: str, **kwargs):
-    """
-    Recupera le informazioni generali sul business come orari, descrizione, indirizzo e lista dei servizi.
-    Usa questa funzione se l'utente fa una domanda generica sul business.
-    """
     business = db.businesses.find_one({"_id": business_id})
     
-    # --- MODIFICA CHIAVE: Gestisce il caso in cui il campo "services" sia vuoto o non esista ---
-    services_str = business.get("services")
-    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
-    # --- FINE MODIFICA ---
+    # --- LOGICA CORRETTA E ROBUSTA ---
+    services_data = business.get("services")
+    services = []
+    # Controlla se services_data è una stringa e se non è vuota prima di decodificare
+    if isinstance(services_data, str) and services_data.strip():
+        try:
+            services = json.loads(services_data)
+        except json.JSONDecodeError:
+            # Se la stringa non è JSON valido, lascia la lista vuota
+            services = []
+    # Se è già una lista, usala direttamente
+    elif isinstance(services_data, list):
+        services = services_data
+    # --- FINE LOGICA CORRETTA ---
 
     info = {
         "nome": business.get("business_name"),
