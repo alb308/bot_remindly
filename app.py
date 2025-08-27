@@ -72,32 +72,28 @@ def webhook():
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
 
-        system_prompt = f"Sei un assistente AI per '{business.get('business_name')}'. Il tuo unico scopo è gestire prenotazioni e dare informazioni sul business. Sii breve e professionale. Non rispondere a domande non pertinenti."
+        system_prompt = f"Sei un assistente AI professionale per '{business.get('business_name')}'."
         
-        # Aggiunge il messaggio corrente alla cronologia per questa interazione
-        messages_for_api = messages_history[-10:]
-        messages_for_api.append({"role": "user", "content": incoming_msg})
-
-        # Prepara la chiamata con il prompt di sistema
-        api_call_messages = [{"role": "system", "content": system_prompt}] + messages_for_api
+        # Costruisce la sequenza di messaggi per l'API
+        api_messages = [{"role": "system", "content": system_prompt}]
+        api_messages.extend(messages_history[-10:])
+        api_messages.append({"role": "user", "content": incoming_msg})
 
         # Esegue il ciclo di conversazione con l'AI
         while True:
             response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=api_call_messages,
+                messages=api_messages,
                 tools=tools,
                 tool_choice="auto",
             )
             response_message = response.choices[0].message
 
             if not response_message.tool_calls:
-                # Se non ci sono strumenti, la conversazione finisce
-                final_response_text = response_message.content
                 break
             
-            # Se ci sono strumenti, la conversazione continua
-            api_call_messages.append(response_message) # Aggiunge la decisione dell'AI
+            # Converte il messaggio dell'AI in un dizionario prima di aggiungerlo
+            api_messages.append(response_message.model_dump(exclude_unset=True))
 
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
@@ -113,17 +109,22 @@ def webhook():
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
-                api_call_messages.append({
+                api_messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": function_name,
                     "content": function_response,
                 })
+
+        final_response_text = response.choices[0].message.content
         
-        # Salva la cronologia pulita, senza il prompt di sistema
+        # Aggiorna la cronologia da salvare nel database con dizionari semplici
+        messages_history.append({"role": "user", "content": incoming_msg})
+        messages_history.append({"role": "assistant", "content": final_response_text})
+
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
-            {"$set": {"messages": api_call_messages[1:], "last_interaction": datetime.now().isoformat()}},
+            {"$set": {"messages": messages_history, "last_interaction": datetime.now().isoformat()}},
             upsert=True
         )
 
@@ -140,4 +141,4 @@ def webhook():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='host.docker.internal', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True)
