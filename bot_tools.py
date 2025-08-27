@@ -123,16 +123,26 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
 
     # Validazioni data e ora
     try:
-        datetime.strptime(date, '%Y-%m-%d')
-        datetime.strptime(time, '%H:%M')
+        appointment_date = datetime.strptime(date, '%Y-%m-%d').date()
+        appointment_time = datetime.strptime(time, '%H:%M').time()
+        appointment_datetime = datetime.combine(appointment_date, appointment_time)
     except ValueError:
         return "Formato data o ora non valido. Usa YYYY-MM-DD per la data e HH:MM per l'ora."
 
-    # Verifica che la data non sia nel passato
-    today = datetime.now().date()
-    request_date = datetime.strptime(date, '%Y-%m-%d').date()
-    if request_date < today:
-        return f"Non puoi prenotare per il {date} perché è nel passato."
+    # VALIDAZIONE CRITICA: Non permettere prenotazioni nel passato
+    now = datetime.now()
+    if appointment_datetime <= now:
+        return f"Non puoi prenotare per il {date} alle {time} perché è nel passato. L'ora attuale è {now.strftime('%H:%M')}."
+
+    # Verifica orari di lavoro
+    booking_hours = business.get("booking_hours", "9-18")
+    try:
+        start_hour, end_hour = map(int, booking_hours.split("-"))
+        appointment_hour = appointment_time.hour
+        if not (start_hour <= appointment_hour < end_hour):
+            return f"L'orario {time} è fuori dagli orari di lavoro ({start_hour}:00-{end_hour}:00)."
+    except (ValueError, AttributeError):
+        pass  # Se non riesce a parsare gli orari, continua
 
     calendar_service = get_calendar_service(business_id)
     if not calendar_service:
