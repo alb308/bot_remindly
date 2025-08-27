@@ -79,51 +79,47 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # --- CODICE CORRETTO PER CARICARE LA CRONOLOGIA ---
+        # Carica la cronologia in modo robusto
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages = []
         if conversation and 'messages' in conversation:
-            # Controlla se i messaggi sono salvati come stringa JSON (vecchio formato)
             if isinstance(conversation['messages'], str):
                 try:
                     messages = json.loads(conversation['messages'])
                 except json.JSONDecodeError:
-                    messages = [] # Se la stringa non è JSON valido, inizia da capo
-            # Altrimenti, sono già una lista (nuovo formato)
+                    messages = []
             elif isinstance(conversation['messages'], list):
                 messages = conversation['messages']
-        # --- FINE CODICE CORRETTO ---
         
-        # Aggiungi il messaggio corrente alla cronologia per l'AI
         messages.append({"role": "user", "content": incoming_msg})
 
-        # --- PRIMA CHIAMATA ALL'AI: L'AI DECIDE COSA FARE ---
+        # --- PRIMA CHIAMATA ALL'AI ---
         response = openai_client.chat.completions.create(
-            model="gpt-4o", # Usiamo un modello più potente per il ragionamento
+            model="gpt-4o",
             messages=messages,
             tools=tools,
             tool_choice="auto",
         )
         response_message = response.choices[0].message
-        messages.append(response_message) # Aggiungi la risposta dell'AI alla cronologia
+        
+        # --- MODIFICA CHIAVE: Converti l'oggetto in dizionario prima di salvarlo ---
+        serializable_message = response_message.model_dump()
+        messages.append(serializable_message)
+        # --- FINE MODIFICA ---
 
-        # --- CONTROLLA SE L'AI VUOLE USARE UNO STRUMENTO ---
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                # Aggiungi i parametri mancanti che l'AI non conosce
                 if 'business_id' not in function_args: function_args['business_id'] = business_id
                 if 'user_id' not in function_args: function_args['user_id'] = from_number
                 if 'user_name' not in function_args: function_args['user_name'] = user_name
 
-                # Esegui la funzione scelta dall'AI
                 print(f"🧠 AI ha scelto di chiamare la funzione: {function_name} con argomenti: {function_args}")
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
-                # Aggiungi il risultato della funzione alla cronologia
                 messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
@@ -131,14 +127,13 @@ def webhook():
                     "content": function_response,
                 })
             
-            # --- SECONDA CHIAMATA ALL'AI: L'AI FORMULA LA RISPOSTA PER L'UTENTE ---
+            # --- SECONDA CHIAMATA ALL'AI ---
             second_response = openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
             )
             response_text = second_response.choices[0].message.content
         else:
-            # Se l'AI non ha chiamato strumenti, usa la sua risposta testuale
             response_text = response_message.content
 
         # Salva la conversazione e invia la risposta
