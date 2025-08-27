@@ -28,14 +28,21 @@ def _get_services(business):
         return []
         
     services_data = business.get("services")
+    
+    # Se è già una lista, restituiscila
     if isinstance(services_data, list):
         return services_data
+    
+    # Se è una stringa, prova a parsarla
     if isinstance(services_data, str) and services_data.strip():
         try:
             return json.loads(services_data)
         except json.JSONDecodeError as e:
-            print(f"⚠️ Errore parsing servizi: {e}")
+            print(f"⚠️ Errore parsing servizi: {e} - Contenuto: '{services_data[:50]}'")
             return []
+    
+    # Se è None, stringa vuota, o altro tipo
+    print(f"⚠️ Services data non valido: {type(services_data)} - {services_data}")
     return []
 
 def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
