@@ -47,125 +47,212 @@ def _get_services(business):
 
 def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
     """Trova gli orari disponibili per un servizio in una data"""
-    # Validazione business
-    business = db.businesses.find_one({"_id": business_id})
-    if not business:
-        return "Errore: business non trovato nel database."
-    
-    services = _get_services(business)
-    if not services:
-        return "Errore: non ci sono servizi configurati per questo business nel database. Contatta l'amministratore."
-
-    # Validazione servizio
-    selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
-    if not selected_service:
-        service_names = [s['name'] for s in services]
-        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {', '.join(service_names)}."
-
-    # Validazione data
     try:
-        datetime.strptime(date, '%Y-%m-%d')
-    except ValueError:
-        return f"Formato data non valido: {date}. Usa il formato YYYY-MM-DD (es: 2024-03-15)."
+        # Validazione business
+        business = db.businesses.find_one({"_id": business_id})
+        if not business:
+            return "Business non trovato nel database."
+        
+        services = _get_services(business)
+        if not services:
+            return "Nessun servizio configurato. Contatta l'amministratore."
 
-    # Verifica che la data non sia nel passato
-    today = datetime.now().date()
-    request_date = datetime.strptime(date, '%Y-%m-%d').date()
-    if request_date < today:
-        return f"Non puoi prenotare per il {date} perché è nel passato. Scegli una data futura."
+        # Validazione servizio
+        selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
+        if not selected_service:
+            service_names = [s['name'] for s in services]
+            return f"Servizio '{service_name}' non trovato. Servizi disponibili: {', '.join(service_names)}."
 
-    calendar_service = get_calendar_service(business_id)
-    if not calendar_service:
-        return "Servizio calendario non configurato. Contatta l'amministratore per risolvere il problema."
+        # Validazione data
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            return f"Formato data non valido: {date}. Usa YYYY-MM-DD."
 
-    # Ottieni orari di lavoro
-    booking_hours = business.get("booking_hours", "9-18")
-    try:
-        start_hour, end_hour = map(int, booking_hours.split("-"))
-    except (ValueError, AttributeError):
-        start_hour, end_hour = 9, 18
+        # Verifica data non nel passato
+        today = datetime.now().date()
+        request_date = datetime.strptime(date, '%Y-%m-%d').date()
+        if request_date < today:
+            return f"Non puoi prenotare per {date} (data passata). Scegli una data futura."
 
-    # Cerca slot disponibili
-    try:
+        calendar_service = get_calendar_service(business_id)
+        if not calendar_service:
+            return "Calendario non configurato."
+
+        # Orari di lavoro
+        booking_hours = business.get("booking_hours", "9-18")
+        try:
+            start_hour, end_hour = map(int, booking_hours.split("-"))
+        except (ValueError, AttributeError):
+            start_hour, end_hour = 9, 18
+
+        # Cerca slot
         slots = calendar_service.get_available_slots(
             date=date, 
             duration_minutes=selected_service['duration'], 
             start_hour=start_hour, 
             end_hour=end_hour
         )
+        
+        if not slots:
+            return f"Nessun orario disponibile per {date}. Prova un'altra data."
+        
+        # Filtra slot futuri se è oggi
+        if request_date == today:
+            current_time = datetime.now().time()
+            future_slots = []
+            for slot in slots:
+                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
+                if slot_time > current_time:
+                    future_slots.append(slot)
+            slots = future_slots
+            
+        if not slots:
+            return f"Nessun orario futuro disponibile per oggi. Prova domani."
+        
+        available_times = [s['start'] for s in slots]
+        return json.dumps(available_times)
+        
     except Exception as e:
-        print(f"❌ Errore calendar service: {e}")
-        return "Errore temporaneo nel controllo disponibilità. Riprova tra poco."
-    
-    if not slots:
-        return f"Nessun orario disponibile per il {date} per il servizio {service_name}. Prova un'altra data."
-    
-    # Restituisci solo gli orari di inizio
-    available_times = [s['start'] for s in slots]
-    return json.dumps(available_times)
+        print(f"❌ Errore get_available_slots: {e}")
+        return "Errore temporaneo. Riprova."
+
+def get_next_available_slot(business_id: str, service_name: str, **kwargs):
+    """Trova il primo orario disponibile per un servizio (oggi o domani)"""
+    try:
+        business = db.businesses.find_one({"_id": business_id})
+        if not business:
+            return "Business non trovato."
+        
+        services = _get_services(business)
+        if not services:
+            return "Nessun servizio configurato."
+
+        selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
+        if not selected_service:
+            service_names = [s['name'] for s in services]
+            return f"Servizio '{service_name}' non trovato. Disponibili: {', '.join(service_names)}."
+
+        calendar_service = get_calendar_service(business_id)
+        if not calendar_service:
+            return "Calendario non configurato."
+
+        booking_hours = business.get("booking_hours", "9-18")
+        try:
+            start_hour, end_hour = map(int, booking_hours.split("-"))
+        except (ValueError, AttributeError):
+            start_hour, end_hour = 9, 18
+
+        # Prova oggi
+        today = datetime.now().strftime('%Y-%m-%d')
+        current_time = datetime.now().time()
+        
+        slots = calendar_service.get_available_slots(
+            date=today, 
+            duration_minutes=selected_service['duration'], 
+            start_hour=start_hour, 
+            end_hour=end_hour
+        )
+        
+        # Filtra solo slot futuri
+        if slots:
+            future_slots = []
+            for slot in slots:
+                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
+                if slot_time > current_time:
+                    future_slots.append(slot)
+            
+            if future_slots:
+                first_slot = future_slots[0]
+                return json.dumps({
+                    "date": today,
+                    "time": first_slot['start'],
+                    "message": f"Il primo orario disponibile è oggi alle {first_slot['start']}"
+                })
+
+        # Se oggi non va, prova domani
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        slots = calendar_service.get_available_slots(
+            date=tomorrow, 
+            duration_minutes=selected_service['duration'], 
+            start_hour=start_hour, 
+            end_hour=end_hour
+        )
+        
+        if slots:
+            first_slot = slots[0]
+            return json.dumps({
+                "date": tomorrow,
+                "time": first_slot['start'],
+                "message": f"Il primo orario disponibile è domani alle {first_slot['start']}"
+            })
+
+        return "Non ci sono orari disponibili oggi o domani. Prova un'altra data."
+        
+    except Exception as e:
+        print(f"❌ Errore get_next_available_slot: {e}")
+        return "Errore nella ricerca. Riprova."
 
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
     """Crea o aggiorna un appuntamento"""
-    # Validazione business
-    business = db.businesses.find_one({"_id": business_id})
-    if not business:
-        return "Errore: business non trovato nel database."
-    
-    services = _get_services(business)
-    if not services:
-        return "Errore: non ci sono servizi configurati per questo business nel database."
-
-    # Validazione servizio
-    selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
-    if not selected_service:
-        service_names = [s['name'] for s in services]
-        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {', '.join(service_names)}."
-
-    # Validazioni data e ora
     try:
-        appointment_date = datetime.strptime(date, '%Y-%m-%d').date()
-        appointment_time = datetime.strptime(time, '%H:%M').time()
-        appointment_datetime = datetime.combine(appointment_date, appointment_time)
-    except ValueError:
-        return "Formato data o ora non valido. Usa YYYY-MM-DD per la data e HH:MM per l'ora."
+        # Validazioni base
+        business = db.businesses.find_one({"_id": business_id})
+        if not business:
+            return "Business non trovato."
+        
+        services = _get_services(business)
+        if not services:
+            return "Nessun servizio configurato."
 
-    # VALIDAZIONE CRITICA: Non permettere prenotazioni nel passato
-    now = datetime.now()
-    if appointment_datetime <= now:
-        return f"Non puoi prenotare per il {date} alle {time} perché è nel passato. L'ora attuale è {now.strftime('%H:%M')}."
+        selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
+        if not selected_service:
+            service_names = [s['name'] for s in services]
+            return f"Servizio '{service_name}' non trovato. Disponibili: {', '.join(service_names)}."
 
-    # Verifica orari di lavoro
-    booking_hours = business.get("booking_hours", "9-18")
-    try:
-        start_hour, end_hour = map(int, booking_hours.split("-"))
-        appointment_hour = appointment_time.hour
-        if not (start_hour <= appointment_hour < end_hour):
-            return f"L'orario {time} è fuori dagli orari di lavoro ({start_hour}:00-{end_hour}:00)."
-    except (ValueError, AttributeError):
-        pass  # Se non riesce a parsare gli orari, continua
+        # Validazioni data e ora
+        try:
+            appointment_date = datetime.strptime(date, '%Y-%m-%d').date()
+            appointment_time = datetime.strptime(time, '%H:%M').time()
+            appointment_datetime = datetime.combine(appointment_date, appointment_time)
+        except ValueError:
+            return "Formato data/ora non valido. Usa YYYY-MM-DD e HH:MM."
 
-    calendar_service = get_calendar_service(business_id)
-    if not calendar_service:
-        return "Servizio calendario non configurato."
+        # VALIDAZIONE CRITICA: Non permettere prenotazioni passate
+        now = datetime.now()
+        if appointment_datetime <= now:
+            return f"Non puoi prenotare per {date} alle {time} (è nel passato). Ora: {now.strftime('%H:%M')}."
 
-    # Cerca prenotazione esistente
-    last_booking = db.bookings.find_one(
-        {"user_id": user_id, "business_id": business_id, "status": "confirmed"}, 
-        sort=[("confirmed_at", -1)]
-    )
-    
-    try:
+        # Verifica orari di lavoro
+        booking_hours = business.get("booking_hours", "9-18")
+        try:
+            start_hour, end_hour = map(int, booking_hours.split("-"))
+            if not (start_hour <= appointment_time.hour < end_hour):
+                return f"Orario {time} fuori dagli orari di lavoro ({start_hour}:00-{end_hour}:00)."
+        except (ValueError, AttributeError):
+            pass
+
+        calendar_service = get_calendar_service(business_id)
+        if not calendar_service:
+            return "Calendario non configurato."
+
+        # Cerca prenotazione esistente
+        last_booking = db.bookings.find_one(
+            {"user_id": user_id, "business_id": business_id, "status": "confirmed"}, 
+            sort=[("confirmed_at", -1)]
+        )
+        
         if last_booking:
-            # Aggiorna appuntamento esistente
+            # Aggiorna esistente
             event_id = calendar_service.update_appointment(
                 event_id=last_booking['calendar_event_id'],
                 new_date=date, 
                 new_start_time=time, 
                 duration_minutes=selected_service['duration']
             )
-            action = "aggiornato"
+            action = "spostato"
         else:
-            # Crea nuovo appuntamento
+            # Crea nuovo
             event_id = calendar_service.create_appointment(
                 date=date, 
                 start_time=time, 
@@ -174,20 +261,10 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
                 customer_phone=user_id, 
                 service_type=service_name
             )
-            action = "creato"
+            action = "prenotato"
 
         if not event_id:
-            # Se fallisce, verifica se l'orario è ancora disponibile
-            slots = calendar_service.get_available_slots(
-                date=date, 
-                duration_minutes=selected_service['duration']
-            )
-            available_times = [s['start'] for s in slots] if slots else []
-            
-            if available_times:
-                return f"L'orario {time} non è più disponibile. Gli orari liberi per il {date} sono: {', '.join(available_times[:5])}. Vuoi prenotare uno di questi?"
-            else:
-                return f"Non ci sono più orari disponibili per il {date}. Prova un'altra data."
+            return f"L'orario {time} non è più disponibile. Verifica gli slot liberi."
 
         # Salva nel database
         booking_data = {
@@ -215,142 +292,74 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
                 "confirmed_at": datetime.now().isoformat()
             })
             
-        return f"✅ Appuntamento per {service_name} {action} per il {date} alle {time}."
+        return f"✅ {service_name.title()} {action} per {date} alle {time}."
         
     except Exception as e:
-        print(f"❌ Errore creazione/aggiornamento booking: {e}")
-        return "Errore temporaneo nella prenotazione. Riprova tra poco."
+        print(f"❌ Errore booking: {e}")
+        return "Errore nella prenotazione. Riprova."
 
 def cancel_booking(business_id: str, user_id: str, **kwargs):
     """Cancella l'ultimo appuntamento di un utente"""
-    last_booking = db.bookings.find_one(
-        {"user_id": user_id, "business_id": business_id, "status": "confirmed"}, 
-        sort=[("confirmed_at", -1)]
-    )
-    
-    if not last_booking:
-        return "Non ho trovato nessuna prenotazione attiva da cancellare."
-    
-    calendar_service = get_calendar_service(business_id)
-    if not calendar_service:
-        return "Servizio calendario non configurato per la cancellazione."
-    
     try:
+        last_booking = db.bookings.find_one(
+            {"user_id": user_id, "business_id": business_id, "status": "confirmed"}, 
+            sort=[("confirmed_at", -1)]
+        )
+        
+        if not last_booking:
+            return "Nessuna prenotazione da cancellare."
+        
+        calendar_service = get_calendar_service(business_id)
+        if not calendar_service:
+            return "Calendario non configurato per cancellazione."
+        
         if calendar_service.cancel_appointment(last_booking['calendar_event_id']):
             db.bookings.update_one(
                 {"_id": last_booking["_id"]}, 
                 {"$set": {"status": "cancelled", "cancelled_at": datetime.now().isoformat()}}
             )
             
-            # Recupera dettagli per messaggio di conferma
+            # Dettagli per conferma
             booking_data = json.loads(last_booking.get('booking_data', '{}'))
             service = booking_data.get('service_type', 'Appuntamento')
             date = booking_data.get('date', '')
             time = booking_data.get('time', '')
             
-            return f"✅ {service} del {date} alle {time} cancellato con successo."
+            return f"✅ {service} del {date} alle {time} cancellato."
         else:
-            return "Errore durante la cancellazione dell'appuntamento. Contattaci direttamente."
+            return "Errore nella cancellazione. Contattaci direttamente."
+            
     except Exception as e:
         print(f"❌ Errore cancellazione: {e}")
-        return "Errore temporaneo nella cancellazione. Riprova o contattaci direttamente."
+        return "Errore nella cancellazione. Riprova."
 
-def get_next_available_slot(business_id: str, service_name: str, **kwargs):
-    """Trova il primo orario disponibile per un servizio (oggi o domani)"""
-    business = db.businesses.find_one({"_id": business_id})
-    if not business:
-        return "Errore: business non trovato nel database."
-    
-    services = _get_services(business)
-    if not services:
-        return "Errore: non ci sono servizi configurati per questo business nel database."
-
-    selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
-    if not selected_service:
-        service_names = [s['name'] for s in services]
-        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {', '.join(service_names)}."
-
-    calendar_service = get_calendar_service(business_id)
-    if not calendar_service:
-        return "Servizio calendario non configurato."
-
-    booking_hours = business.get("booking_hours", "9-18")
-    try:
-        start_hour, end_hour = map(int, booking_hours.split("-"))
-    except (ValueError, AttributeError):
-        start_hour, end_hour = 9, 18
-
-    # Prova prima oggi
-    today = datetime.now().strftime('%Y-%m-%d')
-    try:
-        slots = calendar_service.get_available_slots(
-            date=today, 
-            duration_minutes=selected_service['duration'], 
-            start_hour=start_hour, 
-            end_hour=end_hour
-        )
-        
-        if slots:
-            # Filtra solo slot futuri (non nel passato)
-            current_time = datetime.now().time()
-            future_slots = []
-            for slot in slots:
-                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
-                if slot_time > current_time:
-                    future_slots.append(slot)
-            
-            if future_slots:
-                first_slot = future_slots[0]
-                return json.dumps({
-                    "date": today,
-                    "time": first_slot['start'],
-                    "message": f"Il primo orario disponibile è oggi alle {first_slot['start']}"
-                })
-    except Exception as e:
-        print(f"Errore controllo oggi: {e}")
-
-    # Se oggi non ha slot, prova domani
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    try:
-        slots = calendar_service.get_available_slots(
-            date=tomorrow, 
-            duration_minutes=selected_service['duration'], 
-            start_hour=start_hour, 
-            end_hour=end_hour
-        )
-        
-        if slots:
-            first_slot = slots[0]
-            return json.dumps({
-                "date": tomorrow,
-                "time": first_slot['start'],
-                "message": f"Il primo orario disponibile è domani alle {first_slot['start']}"
-            })
-    except Exception as e:
-        print(f"Errore controllo domani: {e}")
-
-    return "Non ci sono orari disponibili oggi o domani. Prova un'altra data."
+def get_business_info(business_id: str, **kwargs):
     """Recupera le informazioni generali sul business"""
-    business = db.businesses.find_one({"_id": business_id})
-    if not business:
-        return "Errore: informazioni business non trovate."
-    
-    services = _get_services(business)
-    
-    info = {
-        "nome": business.get("business_name", "Non specificato"),
-        "indirizzo": business.get("address", "Non specificato"),
-        "orari_apertura": business.get("opening_hours", "Non specificati"),
-        "descrizione": business.get("description", ""),
-        "servizi_offerti": services or []
-    }
-    
-    # Formatta i servizi in modo più leggibile
-    if services:
-        services_text = []
-        for service in services:
-            duration = service.get('duration', 0)
-            services_text.append(f"- {service.get('name', 'Servizio')} ({duration} min)")
-        info["servizi_formattati"] = "\n".join(services_text)
-    
-    return json.dumps(info, default=str, ensure_ascii=False)
+    try:
+        business = db.businesses.find_one({"_id": business_id})
+        if not business:
+            return "Informazioni business non trovate."
+        
+        services = _get_services(business)
+        
+        info = {
+            "nome": business.get("business_name", "Non specificato"),
+            "indirizzo": business.get("address", "Non specificato"),
+            "orari_apertura": business.get("opening_hours", "Non specificati"),
+            "descrizione": business.get("description", ""),
+            "servizi_offerti": services or []
+        }
+        
+        # Formatta servizi
+        if services:
+            services_text = []
+            for service in services:
+                duration = service.get('duration', 0)
+                services_text.append(f"- {service.get('name', 'Servizio')} ({duration} min)")
+            info["servizi_formattati"] = "\n".join(services_text)
+        
+        return json.dumps(info, default=str, ensure_ascii=False)
+        
+    except Exception as e:
+        print(f"❌ Errore business info: {e}")
+        return "Errore nel recuperare le informazioni."

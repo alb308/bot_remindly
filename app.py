@@ -50,6 +50,8 @@ tools = [
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    start_time = time.time()
+    
     try:
         # Estrai dati immediatamente
         incoming_msg = request.values.get('Body', '').strip()
@@ -57,8 +59,9 @@ def webhook():
         to_number = request.values.get('To', '')
         user_name = request.values.get('ProfileName', 'Cliente')
 
-        # Log immediato per debug
-        print(f"🔵 WEBHOOK RICEVUTO: '{incoming_msg}' da {from_number} alle {datetime.now().strftime('%H:%M:%S')}")
+        # Log dettagliato per debug
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        print(f"🔵 [{timestamp}] WEBHOOK: '{incoming_msg}' da {from_number}")
         
         # Risposta immediata se il messaggio è vuoto
         if not incoming_msg:
@@ -67,81 +70,81 @@ def webhook():
 
         business = db.businesses.find_one({"twilio_phone_number": to_number})
         if not business: 
-            print(f"❌ Business non trovato per numero: {to_number}")
+            print(f"❌ Business non trovato per: {to_number}")
             return Response(status=200)
+            
         business_id = business['_id']
-        
-        print(f"✅ Business trovato: {business.get('business_name')}")
+        print(f"✅ Business: {business.get('business_name')}")
 
+        # Recupera cronologia conversazione (limitata)
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
+        
+        # Mantieni solo ultimi 8 messaggi per ridurre memory usage
+        if len(messages_history) > 8:
+            messages_history = messages_history[-8:]
 
+        # System prompt ottimizzato
         system_prompt = f"""
-        Sei un assistente AI professionale per '{business.get('business_name', 'questo business')}'.
-        Il tuo unico scopo è gestire prenotazioni e dare informazioni su questo business.
+        Sei un assistente AI per '{business.get('business_name', 'questo business')}'.
+        Gestisci solo prenotazioni e informazioni sul business.
         
-        DATA ATTUALE: {datetime.now().strftime('%Y-%m-%d')} (oggi)
-        ORA ATTUALE: {datetime.now().strftime('%H:%M')}
+        DATA: {datetime.now().strftime('%Y-%m-%d')} - ORA: {datetime.now().strftime('%H:%M')}
         
-        Regole importanti:
-        - Quando l'utente dice "oggi", usa la data attuale: {datetime.now().strftime('%Y-%m-%d')}
-        - Quando dice "domani", usa: {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
-        - Quando dice "il prima possibile", "prima possibile", "il primo disponibile":
-          1. Cerca prima gli slot disponibili per OGGI {datetime.now().strftime('%Y-%m-%d')}
-          2. Se non ci sono, prova domani {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
-          3. Proponi SUBITO il primo orario trovato senza chiedere conferma della data
-        - Se menziona solo un orario senza data, assumi OGGI se l'orario non è passato
-        - Usa sempre il formato YYYY-MM-DD per le date nelle funzioni
-        - Sii breve, diretto e non chiedere conferme inutili
-        - Se qualcuno chiede qualcosa che non riguarda prenotazioni, rispondi cortesemente che puoi aiutare solo con prenotazioni e informazioni sul servizio
-        
-        ESEMPI DI COMPORTAMENTO CORRETTO:
-        - User: "il prima possibile per un taglio" → Cerca subito oggi, se trovi slot proponi il primo
-        - User: "domani alle 10" → Controlla se le 10 sono disponibili domani
-        - User: "alle 15" → Assumi oggi se non sono ancora le 15, altrimenti chiedi quale giorno
+        REGOLE:
+        - "oggi" = {datetime.now().strftime('%Y-%m-%d')}
+        - "domani" = {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
+        - "prima possibile" = usa get_next_available_slot
+        - Sii breve e diretto
+        - Non accettare richieste non correlate alle prenotazioni
         """
         
-        # Costruisce la sequenza di messaggi per l'API
+        # Costruisci messaggi API (limitati per velocità)
         api_messages = [{"role": "system", "content": system_prompt}]
-        # Prendi solo gli ultimi 10 messaggi per evitare token limite
-        api_messages.extend(messages_history[-10:])
+        api_messages.extend(messages_history[-6:])  # Solo ultimi 6
         api_messages.append({"role": "user", "content": incoming_msg})
 
-        # Ciclo di conversazione con l'AI
-        max_iterations = 3  # Ridotto per evitare timeout
+        # Loop AI con timeout stringente
+        max_iterations = 2  # Ridotto drasticamente
+        timeout_seconds = 12  # Timeout molto aggressivo
         iteration = 0
-        start_time = time.time()
-        timeout_seconds = 25  # Timeout prima dei 30s di Twilio
         
         while iteration < max_iterations:
             iteration += 1
             
-            # Controllo timeout
-            if time.time() - start_time > timeout_seconds:
-                final_response_text = "Sto elaborando la tua richiesta, ti rispondo tra poco."
+            # Controllo timeout critico
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                print(f"⏰ TIMEOUT dopo {elapsed:.2f}s")
+                final_response_text = "Elaboro la richiesta, un momento..."
                 break
             
-            response = openai_client.chat.completions.create(
-                model="gpt-4o", 
-                messages=api_messages, 
-                tools=tools, 
-                tool_choice="auto",
-                temperature=0.3
-            )
-            response_message = response.choices[0].message
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o", 
+                    messages=api_messages, 
+                    tools=tools, 
+                    tool_choice="auto",
+                    temperature=0.1,  # Ridotta per risposte più deterministiche
+                    max_tokens=300    # Limita lunghezza risposta
+                )
+                response_message = response.choices[0].message
+            except Exception as e:
+                print(f"❌ Errore OpenAI: {e}")
+                final_response_text = "Problema tecnico temporaneo, riprova."
+                break
 
-            # Se non ci sono tool calls, abbiamo la risposta finale
+            # Se nessun tool call, abbiamo la risposta finale
             if not response_message.tool_calls:
                 final_response_text = response_message.content
                 break
             
-            # Aggiungi il messaggio dell'assistant con i tool calls
+            # Aggiungi messaggio assistant
             assistant_message = {
                 "role": "assistant",
                 "content": response_message.content or "",
             }
             
-            # Aggiungi i tool calls se presenti
             if response_message.tool_calls:
                 assistant_message["tool_calls"] = [
                     {
@@ -157,36 +160,37 @@ def webhook():
             
             api_messages.append(assistant_message)
 
-            # Esegui ogni tool call
+            # Esegui tool calls
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
+                
+                # Timeout check per ogni tool call
+                if time.time() - start_time > timeout_seconds:
+                    final_response_text = "Elaboro la richiesta, un momento..."
+                    break
+                
                 try:
                     function_args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError as e:
-                    print(f"Errore parsing argomenti function: {e}")
-                    function_response = f"Errore: argomenti function non validi"
+                except json.JSONDecodeError:
+                    function_response = "Errore nei parametri della funzione"
                 else:
-                    # Aggiungi parametri del contesto
                     function_args.update({
                         'business_id': business_id, 
                         'user_id': from_number, 
                         'user_name': user_name
                     })
 
-                    print(f"🧠 AI chiama: {function_name} con args: {function_args}")
+                    print(f"🛠️ Chiamo: {function_name}")
                     
                     try:
                         function_to_call = getattr(bot_tools, function_name)
                         function_response = function_to_call(**function_args)
-                        print(f"✅ Risposta function: {function_response[:100]}...")
                     except AttributeError:
-                        function_response = f"Errore: funzione {function_name} non trovata"
-                        print(f"❌ Funzione {function_name} non esiste")
+                        function_response = f"Funzione {function_name} non trovata"
                     except Exception as e:
-                        function_response = f"Errore nell'esecuzione della funzione: {str(e)}"
                         print(f"❌ Errore in {function_name}: {e}")
+                        function_response = "Errore temporaneo nella funzione"
                 
-                # Aggiungi la risposta del tool
                 api_messages.append({
                     "tool_call_id": tool_call.id, 
                     "role": "tool",
@@ -194,56 +198,70 @@ def webhook():
                     "content": str(function_response),
                 })
         
-        # Se abbiamo raggiunto il limite di iterazioni senza una risposta finale
-        if iteration >= max_iterations:
-            final_response_text = "Mi dispiace, c'è stato un problema tecnico. Puoi riprovare?"
-        
-        # Aggiorna la cronologia - salva solo messaggi utente/assistente finali
+        # Fallback se non abbiamo risposta finale
+        if 'final_response_text' not in locals():
+            final_response_text = "Un momento, sto elaborando..."
+
+        # Salva cronologia (molto limitata)
         messages_to_save = messages_history + [
             {"role": "user", "content": incoming_msg},
             {"role": "assistant", "content": final_response_text}
         ]
         
-        # Mantieni solo gli ultimi 20 messaggi per evitare database troppo grandi
-        if len(messages_to_save) > 20:
-            messages_to_save = messages_to_save[-20:]
+        # Mantieni solo ultimi 10 messaggi totali
+        if len(messages_to_save) > 10:
+            messages_to_save = messages_to_save[-10:]
         
-        db.conversations.update_one(
-            {"user_id": from_number, "business_id": business_id},
-            {
-                "$set": {
-                    "messages": messages_to_save, 
-                    "last_interaction": datetime.now().isoformat()
-                }
-            },
-            upsert=True
-        )
+        # Update database
+        try:
+            db.conversations.update_one(
+                {"user_id": from_number, "business_id": business_id},
+                {
+                    "$set": {
+                        "messages": messages_to_save, 
+                        "last_interaction": datetime.now().isoformat()
+                    }
+                },
+                upsert=True
+            )
+        except Exception as e:
+            print(f"⚠️ Errore salvataggio DB: {e}")
 
-        print(f"📤 Risposta inviata: '{final_response_text[:70]}...'")
+        elapsed = time.time() - start_time
+        print(f"📤 [{elapsed:.2f}s] Risposta: '{final_response_text[:50]}...'")
         
-        # Invia risposta via WhatsApp
+        # Risposta WhatsApp
         resp = MessagingResponse()
         resp.message(final_response_text)
         return Response(str(resp), mimetype='text/xml')
 
     except Exception as e:
-        print(f"💥 ERRORE CRITICO NEL WEBHOOK: {e}")
+        elapsed = time.time() - start_time
+        print(f"💥 CRASH dopo {elapsed:.2f}s: {e}")
         import traceback
         traceback.print_exc()
         
-        # Invia messaggio di errore all'utente
+        # Risposta di emergenza
         try:
             resp = MessagingResponse()
-            resp.message("Mi dispiace, c'è stato un problema tecnico. Riprova tra poco.")
+            resp.message("Problema tecnico, riprova tra poco.")
             return Response(str(resp), mimetype='text/xml')
         except:
             return Response(status=500)
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Endpoint per verificare che il server sia attivo"""
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    return {
+        "status": "ok", 
+        "timestamp": datetime.now().isoformat(),
+        "uptime": "Railway bot attivo"
+    }
+
+@app.route('/test', methods=['GET'])
+def test():
+    return f"Server OK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False in produzione
+    print(f"🚀 Bot starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
