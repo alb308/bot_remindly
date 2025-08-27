@@ -99,11 +99,16 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
         
         # Filtra slot futuri se è oggi
         if request_date == today:
-            current_time = datetime.now().time()
+            now = datetime.now()
             future_slots = []
             for slot in slots:
-                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
-                if slot_time > current_time:
+                # CORREZIONE CRITICA: Confronta datetime completi, non solo time
+                slot_datetime = datetime.combine(
+                    request_date,
+                    datetime.strptime(slot['start'], '%H:%M').time()
+                )
+                # Solo slot almeno 5 minuti nel futuro
+                if slot_datetime > now + timedelta(minutes=5):
                     future_slots.append(slot)
             slots = future_slots
             
@@ -145,7 +150,7 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
 
         # Prova oggi
         today = datetime.now().strftime('%Y-%m-%d')
-        current_time = datetime.now().time()
+        now = datetime.now()  # Datetime completo per confronto preciso
         
         slots = calendar_service.get_available_slots(
             date=today, 
@@ -154,12 +159,18 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
             end_hour=end_hour
         )
         
-        # Filtra solo slot futuri
+        # CORREZIONE CRITICA: Filtra slot confrontando datetime completi
         if slots:
             future_slots = []
             for slot in slots:
-                slot_time = datetime.strptime(slot['start'], '%H:%M').time()
-                if slot_time > current_time:
+                # Crea datetime completo per confronto preciso
+                slot_datetime = datetime.combine(
+                    datetime.strptime(today, '%Y-%m-%d').date(),
+                    datetime.strptime(slot['start'], '%H:%M').time()
+                )
+                
+                # Solo slot almeno 5 minuti nel futuro per sicurezza
+                if slot_datetime > now + timedelta(minutes=5):
                     future_slots.append(slot)
             
             if future_slots:
