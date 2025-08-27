@@ -17,7 +17,6 @@ def get_calendar_service(business_id):
             calendar_services[business_id] = CalendarService(calendar_id=calendar_id, service_account_key=service_account_key)
     return calendar_services.get(business_id)
 
-# --- MODIFICA: Aggiunto **kwargs per accettare parametri extra ---
 def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
     """
     Trova gli orari disponibili per un servizio specifico in una data specifica.
@@ -25,8 +24,9 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
     'date' deve essere in formato 'YYYY-MM-DD'.
     """
     business = db.businesses.find_one({"_id": business_id})
-    services_str = business.get("services", "[]")
-    services = json.loads(services_str) if isinstance(services_str, str) else services_str
+    services_str = business.get("services")
+    # Aggiunto controllo per stringa non vuota
+    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
     
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
@@ -50,8 +50,8 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
     'date' deve essere in formato 'YYYY-MM-DD', 'time' in formato 'HH:MM'.
     """
     business = db.businesses.find_one({"_id": business_id})
-    services_str = business.get("services", "[]")
-    services = json.loads(services_str) if isinstance(services_str, str) else services_str
+    services_str = business.get("services")
+    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
 
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
@@ -61,17 +61,14 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
     if not calendar_service:
         return "Servizio calendario non configurato."
 
-    # Controlla se esiste già una prenotazione da aggiornare
     last_booking = db.bookings.find_one({"user_id": user_id, "business_id": business_id, "status": "confirmed"}, sort=[("confirmed_at", -1)])
     
     if last_booking:
-        # Aggiorna appuntamento esistente
         event_id = calendar_service.update_appointment(
             event_id=last_booking['calendar_event_id'],
             new_date=date, new_start_time=time, duration_minutes=selected_service['duration']
         )
     else:
-        # Crea un nuovo appuntamento
         event_id = calendar_service.create_appointment(
             date=date, start_time=time, duration_minutes=selected_service['duration'],
             customer_name=user_name, customer_phone=user_id, service_type=service_name
@@ -80,7 +77,6 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
     if not event_id:
         return "Errore: impossibile creare o aggiornare l'appuntamento sul calendario."
 
-    # Salva o aggiorna nel database
     booking_data = {"date": date, "time": time, "duration": selected_service['duration'], "service_type": service_name, "customer_name": user_name, "customer_phone": user_id}
     if last_booking:
         db.bookings.update_one({"_id": last_booking["_id"]}, {"$set": {"booking_data": json.dumps(booking_data)}})
@@ -108,7 +104,6 @@ def cancel_booking(business_id: str, user_id: str, **kwargs):
     else:
         return "Errore durante la cancellazione dell'appuntamento."
 
-# --- MODIFICA: Aggiunto **kwargs per accettare parametri extra ---
 def get_business_info(business_id: str, **kwargs):
     """
     Recupera le informazioni generali sul business come orari, descrizione, indirizzo e lista dei servizi.
@@ -116,9 +111,10 @@ def get_business_info(business_id: str, **kwargs):
     """
     business = db.businesses.find_one({"_id": business_id})
     
-    # Decodifica i servizi se sono una stringa JSON
-    services_str = business.get("services", "[]")
-    services = json.loads(services_str) if isinstance(services_str, str) else services_str
+    # --- MODIFICA CHIAVE: Gestisce il caso in cui il campo "services" sia vuoto o non esista ---
+    services_str = business.get("services")
+    services = json.loads(services_str) if services_str and isinstance(services_str, str) else services_str or []
+    # --- FINE MODIFICA ---
 
     info = {
         "nome": business.get("business_name"),
