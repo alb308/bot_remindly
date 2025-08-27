@@ -1,10 +1,10 @@
 import json
 from datetime import datetime
-from db_sqlite import SQLiteClient
+from database import db_connection
 from calendar_service import CalendarService
 import os
 
-db = SQLiteClient
+db = db_connection
 calendar_services = {}
 
 def get_calendar_service(business_id):
@@ -17,7 +17,7 @@ def get_calendar_service(business_id):
     return calendar_services.get(business_id)
 
 def _get_services(business):
-    """Funzione helper robusta per caricare i servizi."""
+    """Funzione helper robusta per caricare i servizi in modo sicuro."""
     services_data = business.get("services")
     if isinstance(services_data, list):
         return services_data
@@ -32,6 +32,9 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
     business = db.businesses.find_one({"_id": business_id})
     services = _get_services(business)
     
+    if not services:
+        return "Errore: non ci sono servizi configurati per questo business nel database. Impossibile procedere."
+
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
         return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {[s['name'] for s in services]}."
@@ -51,6 +54,9 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
     business = db.businesses.find_one({"_id": business_id})
     services = _get_services(business)
+    
+    if not services:
+        return "Errore: non ci sono servizi configurati per questo business nel database. Impossibile procedere."
 
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:

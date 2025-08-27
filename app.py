@@ -5,53 +5,37 @@ from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
-from db_sqlite import SQLiteClient
+from database import db_connection
 import bot_tools
 
 load_dotenv()
 app = Flask(__name__)
 
-db = SQLiteClient
+db = db_connection
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 tools = [
     {
-        "type": "function",
-        "function": {
-            "name": "get_available_slots",
-            "description": "Trova gli orari disponibili per un servizio specifico in una data specifica. Da usare quando un utente chiede la disponibilità.",
-            "parameters": {
-                "type": "object",
-                "properties": { "service_name": {"type": "string"}, "date": {"type": "string"} },
-                "required": ["service_name", "date"],
-            },
+        "type": "function", "function": {
+            "name": "get_available_slots", "description": "Trova gli orari disponibili per un servizio in una data.",
+            "parameters": { "type": "object", "properties": { "service_name": {"type": "string"}, "date": {"type": "string"} }, "required": ["service_name", "date"] },
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "create_or_update_booking",
-            "description": "Crea o aggiorna un appuntamento. Da usare quando l'utente conferma un orario specifico.",
-            "parameters": {
-                "type": "object",
-                "properties": { "service_name": {"type": "string"}, "date": {"type": "string"}, "time": {"type": "string"} },
-                "required": ["service_name", "date", "time"],
-            },
+        "type": "function", "function": {
+            "name": "create_or_update_booking", "description": "Crea o aggiorna un appuntamento.",
+            "parameters": { "type": "object", "properties": { "service_name": {"type": "string"}, "date": {"type": "string"}, "time": {"type": "string"} }, "required": ["service_name", "date", "time"] },
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "cancel_booking",
-            "description": "Cancella l'ultimo appuntamento di un utente. Da usare se l'utente vuole disdire.",
+        "type": "function", "function": {
+            "name": "cancel_booking", "description": "Cancella l'ultimo appuntamento di un utente.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_business_info",
-            "description": "Recupera le informazioni generali sul business (orari, indirizzo, servizi).",
+        "type": "function", "function": {
+            "name": "get_business_info", "description": "Recupera le informazioni generali sul business (orari, indirizzo, servizi).",
             "parameters": {"type": "object", "properties": {}},
         }
     }
@@ -72,59 +56,55 @@ def webhook():
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
 
-        system_prompt = f"Sei un assistente AI professionale per '{business.get('business_name')}'."
+        system_prompt = f"""
+        Sei un assistente AI professionale per '{business.get('business_name')}'.
+        Il tuo unico scopo è gestire prenotazioni e dare informazioni su questo business.
+        Sii breve, professionale e non rispondere a domande non pertinenti.
+        """
         
-        # Costruisce la sequenza di messaggi per l'API
+        # 1. Costruisce la sequenza di messaggi per l'API
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages_history[-10:])
         api_messages.append({"role": "user", "content": incoming_msg})
 
-        # Esegue il ciclo di conversazione con l'AI
+        # 2. Esegue il ciclo di conversazione con l'AI
         while True:
             response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=api_messages,
-                tools=tools,
-                tool_choice="auto",
+                model="gpt-4o", messages=api_messages, tools=tools, tool_choice="auto",
             )
             response_message = response.choices[0].message
 
             if not response_message.tool_calls:
+                final_response_text = response_message.content
                 break
             
-            # Converte il messaggio dell'AI in un dizionario prima di aggiungerlo
-            api_messages.append(response_message.model_dump(exclude_unset=True))
+            api_messages.append(response_message)
 
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                function_args.update({
-                    'business_id': business_id,
-                    'user_id': from_number,
-                    'user_name': user_name
-                })
+                function_args.update({'business_id': business_id, 'user_id': from_number, 'user_name': user_name})
 
                 print(f"🧠 AI chiama: {function_name}")
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
                 api_messages.append({
-                    "tool_call_id": tool_call.id,
-                    "role": "tool",
-                    "name": function_name,
-                    "content": function_response,
+                    "tool_call_id": tool_call.id, "role": "tool",
+                    "name": function_name, "content": function_response,
                 })
-
-        final_response_text = response.choices[0].message.content
         
-        # Aggiorna la cronologia da salvare nel database con dizionari semplici
-        messages_history.append({"role": "user", "content": incoming_msg})
-        messages_history.append({"role": "assistant", "content": final_response_text})
-
+        # 3. Aggiorna la cronologia da salvare nel database
+        # Salva solo i messaggi utente/assistente, non i passaggi intermedi
+        messages_to_save = messages_history + [
+            {"role": "user", "content": incoming_msg},
+            {"role": "assistant", "content": final_response_text}
+        ]
+        
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
-            {"$set": {"messages": messages_history, "last_interaction": datetime.now().isoformat()}},
+            {"$set": {"messages": messages_to_save, "last_interaction": datetime.now().isoformat()}},
             upsert=True
         )
 

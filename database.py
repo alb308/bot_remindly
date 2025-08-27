@@ -16,7 +16,6 @@ class MongoClientWrapper:
 
         uri = db_uri or os.getenv("MONGO_URI")
         if not uri:
-            # ERRORE 1: La variabile non è impostata su Railway
             raise Exception("ERRORE CRITICO: La variabile d'ambiente MONGO_URI non è stata impostata.")
 
         try:
@@ -25,7 +24,6 @@ class MongoClientWrapper:
             self.client.admin.command('ping')
             print("--- CONNESSIONE A MONGODB STABILITA CON SUCCESSO! ---")
             
-            # Esponi le collection
             db = self.client.remindly
             self.businesses = db.businesses
             self.conversations = db.conversations
@@ -34,10 +32,8 @@ class MongoClientWrapper:
             self.pending_bookings = db.pending_bookings
 
         except Exception as e:
-            # ERRORE 2: Errore di connessione (password, IP, etc.)
-            # Ora solleviamo un'eccezione per far crashare il deploy e vedere l'errore VERO.
             print(f"--- ERRORE FATALE DI CONNESSIONE A MONGODB ---")
             raise Exception(f"Impossibile connettersi a MongoDB: {e}")
 
-# Rinominiamo la classe per coerenza con il resto del codice
-SQLiteClient = MongoClientWrapper()
+# Nome corretto e coerente
+db_connection = MongoClientWrapper()
