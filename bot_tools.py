@@ -17,7 +17,8 @@ def get_calendar_service(business_id):
             calendar_services[business_id] = CalendarService(calendar_id=calendar_id, service_account_key=service_account_key)
     return calendar_services.get(business_id)
 
-def get_available_slots(business_id: str, service_name: str, date: str):
+# --- MODIFICA: Aggiunto **kwargs per accettare parametri extra ---
+def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
     """
     Trova gli orari disponibili per un servizio specifico in una data specifica.
     Usa questa funzione quando un utente chiede la disponibilità.
@@ -43,7 +44,7 @@ def get_available_slots(business_id: str, service_name: str, date: str):
     
     return json.dumps([s['start'] for s in slots])
 
-def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str):
+def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
     """
     Crea un nuovo appuntamento o aggiorna uno esistente se l'utente ne ha già uno per quella data.
     'date' deve essere in formato 'YYYY-MM-DD', 'time' in formato 'HH:MM'.
@@ -91,7 +92,7 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         
     return f"Appuntamento per {service_name} confermato per il {date} alle {time}."
 
-def cancel_booking(business_id: str, user_id: str):
+def cancel_booking(business_id: str, user_id: str, **kwargs):
     """
     Cancella l'ultimo appuntamento confermato di un utente.
     Usa questa funzione quando l'utente esprime l'intenzione di annullare, disdire o che ha un imprevisto.
@@ -107,17 +108,23 @@ def cancel_booking(business_id: str, user_id: str):
     else:
         return "Errore durante la cancellazione dell'appuntamento."
 
-def get_business_info(business_id: str):
+# --- MODIFICA: Aggiunto **kwargs per accettare parametri extra ---
+def get_business_info(business_id: str, **kwargs):
     """
     Recupera le informazioni generali sul business come orari, descrizione, indirizzo e lista dei servizi.
     Usa questa funzione se l'utente fa una domanda generica sul business.
     """
     business = db.businesses.find_one({"_id": business_id})
+    
+    # Decodifica i servizi se sono una stringa JSON
+    services_str = business.get("services", "[]")
+    services = json.loads(services_str) if isinstance(services_str, str) else services_str
+
     info = {
         "nome": business.get("business_name"),
         "indirizzo": business.get("address"),
         "orari": business.get("opening_hours"),
         "descrizione": business.get("description"),
-        "servizi": business.get("services")
+        "servizi": services
     }
     return json.dumps(info, default=str)
