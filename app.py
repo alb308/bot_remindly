@@ -15,7 +15,6 @@ db = SQLiteClient
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 tools = [
-    # Le definizioni degli strumenti rimangono identiche a prima
     {
         "type": "function",
         "function": {
@@ -77,13 +76,9 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # 1. Carica la cronologia salvata
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
-        messages_history = []
-        if conversation and 'messages' in conversation:
-            messages_history = conversation.get('messages', [])
+        messages_history = conversation.get('messages', []) if conversation else []
 
-        # 2. Prepara la sequenza di messaggi per l'API
         system_prompt = f"""
         Sei un assistente AI professionale per '{business.get('business_name')}', un'attività di tipo '{business.get('business_type')}'.
         Il tuo unico scopo è aiutare gli utenti a gestire le prenotazioni e a ricevere informazioni relative a questo business.
@@ -93,22 +88,20 @@ def webhook():
         3. Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile per riportare la conversazione in argomento.
         """
         
-        # Crea la lista di messaggi per l'interazione corrente
+        # Costruisce la sequenza di messaggi per l'API in modo lineare
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages_history[-10:])
         api_messages.append({"role": "user", "content": incoming_msg})
 
-        # 3. Prima chiamata all'AI per decidere l'azione
+        # Prima chiamata all'AI
         response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=api_messages,
-            tools=tools,
-            tool_choice="auto",
+            model="gpt-4o", messages=api_messages, tools=tools, tool_choice="auto"
         )
         response_message = response.choices[0].message
-        api_messages.append(response_message.model_dump(exclude_unset=True))
 
-        # 4. Se l'AI sceglie uno strumento, eseguilo
+        # Aggiunge la risposta dell'AI (che può contenere tool_calls) alla sequenza
+        api_messages.append(response_message)
+
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
@@ -122,6 +115,7 @@ def webhook():
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
+                # Aggiunge il risultato del tool alla sequenza, rispettando le regole dell'API
                 api_messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
@@ -129,18 +123,17 @@ def webhook():
                     "content": function_response,
                 })
             
-            # 5. Seconda chiamata all'AI per formulare la risposta finale
+            # Seconda chiamata all'AI con la sequenza completa
             second_response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=api_messages,
+                model="gpt-4o", messages=api_messages
             )
             final_response_text = second_response.choices[0].message.content
-            final_assistant_message_for_db = second_response.choices[0].message.model_dump(exclude_unset=True)
+            final_assistant_message_for_db = second_response.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
         else:
             final_response_text = response_message.content
-            final_assistant_message_for_db = response_message.model_dump(exclude_unset=True)
+            final_assistant_message_for_db = response_message.model_dump(exclude_unset=True, exclude_none=True)
 
-        # 6. Aggiorna la cronologia da salvare nel database
+        # Aggiorna la cronologia da salvare nel database con la conversazione effettiva
         messages_history.append({"role": "user", "content": incoming_msg})
         messages_history.append(final_assistant_message_for_db)
 
