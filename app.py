@@ -50,75 +50,158 @@ def webhook():
         user_name = request.values.get('ProfileName', 'Cliente')
 
         business = db.businesses.find_one({"twilio_phone_number": to_number})
-        if not business: return Response(status=200)
+        if not business: 
+            print(f"Business non trovato per numero: {to_number}")
+            return Response(status=200)
         business_id = business['_id']
 
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
 
         system_prompt = f"""
-        Sei un assistente AI professionale per '{business.get('business_name')}'.
+        Sei un assistente AI professionale per '{business.get('business_name', 'questo business')}'.
         Il tuo unico scopo è gestire prenotazioni e dare informazioni su questo business.
         Sii breve, professionale e non rispondere a domande non pertinenti.
+        Se qualcuno chiede qualcosa che non riguarda prenotazioni o informazioni sul business, 
+        rispondi cortesemente che puoi aiutare solo con prenotazioni e informazioni sul servizio.
         """
         
-        # 1. Costruisce la sequenza di messaggi per l'API
+        # Costruisce la sequenza di messaggi per l'API
         api_messages = [{"role": "system", "content": system_prompt}]
+        # Prendi solo gli ultimi 10 messaggi per evitare token limite
         api_messages.extend(messages_history[-10:])
         api_messages.append({"role": "user", "content": incoming_msg})
 
-        # 2. Esegue il ciclo di conversazione con l'AI
-        while True:
+        # Ciclo di conversazione con l'AI
+        max_iterations = 5  # Previeni loop infiniti
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            
             response = openai_client.chat.completions.create(
-                model="gpt-4o", messages=api_messages, tools=tools, tool_choice="auto",
+                model="gpt-4o", 
+                messages=api_messages, 
+                tools=tools, 
+                tool_choice="auto",
+                temperature=0.3
             )
             response_message = response.choices[0].message
 
+            # Se non ci sono tool calls, abbiamo la risposta finale
             if not response_message.tool_calls:
                 final_response_text = response_message.content
                 break
             
-            api_messages.append(response_message)
+            # Aggiungi il messaggio dell'assistant con i tool calls
+            assistant_message = {
+                "role": "assistant",
+                "content": response_message.content or "",
+            }
+            
+            # Aggiungi i tool calls se presenti
+            if response_message.tool_calls:
+                assistant_message["tool_calls"] = [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    }
+                    for tool_call in response_message.tool_calls
+                ]
+            
+            api_messages.append(assistant_message)
 
+            # Esegui ogni tool call
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                
-                function_args.update({'business_id': business_id, 'user_id': from_number, 'user_name': user_name})
+                try:
+                    function_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError as e:
+                    print(f"Errore parsing argomenti function: {e}")
+                    function_response = f"Errore: argomenti function non validi"
+                else:
+                    # Aggiungi parametri del contesto
+                    function_args.update({
+                        'business_id': business_id, 
+                        'user_id': from_number, 
+                        'user_name': user_name
+                    })
 
-                print(f"🧠 AI chiama: {function_name}")
-                function_to_call = getattr(bot_tools, function_name)
-                function_response = function_to_call(**function_args)
+                    print(f"🧠 AI chiama: {function_name} con args: {function_args}")
+                    
+                    try:
+                        function_to_call = getattr(bot_tools, function_name)
+                        function_response = function_to_call(**function_args)
+                        print(f"✅ Risposta function: {function_response[:100]}...")
+                    except AttributeError:
+                        function_response = f"Errore: funzione {function_name} non trovata"
+                        print(f"❌ Funzione {function_name} non esiste")
+                    except Exception as e:
+                        function_response = f"Errore nell'esecuzione della funzione: {str(e)}"
+                        print(f"❌ Errore in {function_name}: {e}")
                 
+                # Aggiungi la risposta del tool
                 api_messages.append({
-                    "tool_call_id": tool_call.id, "role": "tool",
-                    "name": function_name, "content": function_response,
+                    "tool_call_id": tool_call.id, 
+                    "role": "tool",
+                    "name": function_name, 
+                    "content": str(function_response),
                 })
         
-        # 3. Aggiorna la cronologia da salvare nel database
-        # Salva solo i messaggi utente/assistente, non i passaggi intermedi
+        # Se abbiamo raggiunto il limite di iterazioni senza una risposta finale
+        if iteration >= max_iterations:
+            final_response_text = "Mi dispiace, c'è stato un problema tecnico. Puoi riprovare?"
+        
+        # Aggiorna la cronologia - salva solo messaggi utente/assistente finali
         messages_to_save = messages_history + [
             {"role": "user", "content": incoming_msg},
             {"role": "assistant", "content": final_response_text}
         ]
         
+        # Mantieni solo gli ultimi 20 messaggi per evitare database troppo grandi
+        if len(messages_to_save) > 20:
+            messages_to_save = messages_to_save[-20:]
+        
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
-            {"$set": {"messages": messages_to_save, "last_interaction": datetime.now().isoformat()}},
+            {
+                "$set": {
+                    "messages": messages_to_save, 
+                    "last_interaction": datetime.now().isoformat()
+                }
+            },
             upsert=True
         )
 
-        print(f"--- Risposta inviata: '{final_response_text[:70]}...' ---")
+        print(f"📤 Risposta inviata: '{final_response_text[:70]}...'")
+        
+        # Invia risposta via WhatsApp
         resp = MessagingResponse()
         resp.message(final_response_text)
         return Response(str(resp), mimetype='text/xml')
 
     except Exception as e:
-        print(f"--- ERRORE CRITICO E IMPREVISTO NEL WEBHOOK: {e} ---")
+        print(f"💥 ERRORE CRITICO NEL WEBHOOK: {e}")
         import traceback
         traceback.print_exc()
-        return Response(status=500)
+        
+        # Invia messaggio di errore all'utente
+        try:
+            resp = MessagingResponse()
+            resp.message("Mi dispiace, c'è stato un problema tecnico. Riprova tra poco.")
+            return Response(str(resp), mimetype='text/xml')
+        except:
+            return Response(status=500)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Endpoint per verificare che il server sia attivo"""
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False in produzione
