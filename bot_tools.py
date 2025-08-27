@@ -4,7 +4,6 @@ from db_sqlite import SQLiteClient
 from calendar_service import CalendarService
 import os
 
-# Inizializza i servizi una sola volta per efficienza
 db = SQLiteClient
 calendar_services = {}
 
@@ -17,22 +16,25 @@ def get_calendar_service(business_id):
             calendar_services[business_id] = CalendarService(calendar_id=calendar_id, service_account_key=service_account_key)
     return calendar_services.get(business_id)
 
-def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
-    business = db.businesses.find_one({"_id": business_id})
+def _get_services(business):
+    """Funzione helper robusta per caricare i servizi."""
     services_data = business.get("services")
-    
-    services = []
+    if isinstance(services_data, list):
+        return services_data
     if isinstance(services_data, str) and services_data.strip():
         try:
-            services = json.loads(services_data)
+            return json.loads(services_data)
         except json.JSONDecodeError:
-            services = []
-    elif isinstance(services_data, list):
-        services = services_data
+            return []
+    return []
 
+def get_available_slots(business_id: str, service_name: str, date: str, **kwargs):
+    business = db.businesses.find_one({"_id": business_id})
+    services = _get_services(business)
+    
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
-        return f"Servizio '{service_name}' non trovato."
+        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {[s['name'] for s in services]}."
 
     calendar_service = get_calendar_service(business_id)
     if not calendar_service:
@@ -48,20 +50,11 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
 
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
     business = db.businesses.find_one({"_id": business_id})
-    services_data = business.get("services")
-
-    services = []
-    if isinstance(services_data, str) and services_data.strip():
-        try:
-            services = json.loads(services_data)
-        except json.JSONDecodeError:
-            services = []
-    elif isinstance(services_data, list):
-        services = services_data
+    services = _get_services(business)
 
     selected_service = next((s for s in services if s['name'].lower() == service_name.lower()), None)
     if not selected_service:
-        return f"Servizio '{service_name}' non trovato."
+        return f"Servizio '{service_name}' non trovato. I servizi disponibili sono: {[s['name'] for s in services]}."
 
     calendar_service = get_calendar_service(business_id)
     if not calendar_service:
@@ -81,7 +74,7 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         )
 
     if not event_id:
-        return "Errore: impossibile creare o aggiornare l'appuntamento sul calendario."
+        return "Errore: impossibile creare o aggiornare l'appuntamento sul calendario. L'orario potrebbe non essere valido."
 
     booking_data = {"date": date, "time": time, "duration": selected_service['duration'], "service_type": service_name, "customer_name": user_name, "customer_phone": user_id}
     if last_booking:
@@ -108,27 +101,13 @@ def cancel_booking(business_id: str, user_id: str, **kwargs):
 
 def get_business_info(business_id: str, **kwargs):
     business = db.businesses.find_one({"_id": business_id})
-    
-    # --- LOGICA CORRETTA E ROBUSTA ---
-    services_data = business.get("services")
-    services = []
-    # Controlla se services_data è una stringa e se non è vuota prima di decodificare
-    if isinstance(services_data, str) and services_data.strip():
-        try:
-            services = json.loads(services_data)
-        except json.JSONDecodeError:
-            # Se la stringa non è JSON valido, lascia la lista vuota
-            services = []
-    # Se è già una lista, usala direttamente
-    elif isinstance(services_data, list):
-        services = services_data
-    # --- FINE LOGICA CORRETTA ---
+    services = _get_services(business)
 
     info = {
         "nome": business.get("business_name"),
         "indirizzo": business.get("address"),
-        "orari": business.get("opening_hours"),
+        "orari_apertura": business.get("opening_hours"),
         "descrizione": business.get("description"),
-        "servizi": services
+        "servizi_offerti": services
     }
     return json.dumps(info, default=str)

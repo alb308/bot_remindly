@@ -1,22 +1,19 @@
 import os
 import json
-import re
-from datetime import datetime, date
+from datetime import datetime
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
 from db_sqlite import SQLiteClient
-import bot_tools # Importa la nostra nuova cassetta degli attrezzi
+import bot_tools
 
 load_dotenv()
 app = Flask(__name__)
 
-# --- Inizializzazione Servizi ---
 db = SQLiteClient
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --- Definizione degli "Strumenti" per l'AI ---
 tools = [
     {
         "type": "function",
@@ -79,40 +76,31 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # Carica la cronologia in modo robusto
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
-        messages = []
+        messages_history = []
         if conversation and 'messages' in conversation:
             if isinstance(conversation['messages'], str):
-                try:
-                    messages = json.loads(conversation['messages'])
-                except json.JSONDecodeError:
-                    messages = []
+                try: messages_history = json.loads(conversation['messages'])
+                except json.JSONDecodeError: messages_history = []
             elif isinstance(conversation['messages'], list):
-                messages = conversation['messages']
+                messages_history = conversation['messages']
 
-        # --- NUOVO "REGOLAMENTO INTERNO" PER L'AI ---
         system_prompt = f"""
         Sei un assistente AI professionale per '{business.get('business_name')}', un'attività di tipo '{business.get('business_type')}'.
         Il tuo unico scopo è aiutare gli utenti a gestire le prenotazioni e a ricevere informazioni relative a questo business.
-        
-        REGOLE FONDAMENTALI E OBBLIGATORIE:
-        1.  Focalizzati al 100% sui tuoi compiti: prenotare, modificare, cancellare appuntamenti e fornire informazioni (orari, servizi, indirizzo).
-        2.  NON DEVI rispondere a domande non pertinenti (off-topic). Questo include meteo, matematica, cultura generale, politica, sport, ecc.
-        3.  NON DEVI fare conversazione generica o chiacchiere. NON usare solo emoji per rispondere.
-        4.  Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile ma ferma per riportare la conversazione in argomento.
-            - Esempio di risposta corretta: "Mi dispiace, non sono programmato per questo. Posso però aiutarti a prenotare o darti informazioni sui nostri servizi."
-            - Esempio di risposta corretta: "Il mio ruolo è di assistente per le prenotazioni. Come posso aiutarti riguardo a '{business.get('business_name')}'?"
-        5.  Sii sempre cortese, professionale e vai dritto al punto.
+        REGOLE FONDAMENTALI:
+        1. Focalizzati al 100% sui tuoi compiti: prenotare, modificare, cancellare appuntamenti e fornire informazioni.
+        2. NON DEVI rispondere a domande non pertinenti (meteo, matematica, cultura generale, etc.).
+        3. Se un utente fa una domanda non pertinente, DEVI rispondere con una frase gentile per riportare la conversazione in argomento, come: "Mi dispiace, non sono programmato per questo. Posso però aiutarti a prenotare o darti informazioni sui nostri servizi."
         """
         
-        # Prepara la lista di messaggi per l'API, inserendo sempre il regolamento all'inizio
-        api_messages = [{"role": "system", "content": system_prompt}]
-        # Aggiungi solo gli ultimi 10 messaggi per mantenere il contesto senza appesantire
-        api_messages.extend(messages[-10:])
-        api_messages.append({"role": "user", "content": incoming_msg})
+        # Aggiungi il messaggio dell'utente alla cronologia per questa interazione
+        current_interaction_messages = messages_history[-10:] # Lavora con una cronologia recente
+        current_interaction_messages.append({"role": "user", "content": incoming_msg})
 
-        # --- PRIMA CHIAMATA ALL'AI ---
+        # Prepara i messaggi per l'API, includendo sempre il prompt di sistema
+        api_messages = [{"role": "system", "content": system_prompt}] + current_interaction_messages
+
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=api_messages,
@@ -120,50 +108,49 @@ def webhook():
             tool_choice="auto",
         )
         response_message = response.choices[0].message
-        
-        # Aggiungi alla cronologia sia il messaggio dell'utente che la risposta dell'AI
-        messages.append({"role": "user", "content": incoming_msg})
-        messages.append(response_message.model_dump())
+
+        # Aggiungi la decisione dell'AI alla cronologia di questa interazione
+        current_interaction_messages.append(response_message.model_dump())
 
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                if 'business_id' not in function_args: function_args['business_id'] = business_id
-                if 'user_id' not in function_args: function_args['user_id'] = from_number
-                if 'user_name' not in function_args: function_args['user_name'] = user_name
+                function_args['business_id'] = business_id
+                function_args['user_id'] = from_number
+                function_args['user_name'] = user_name
 
-                print(f"🧠 AI ha scelto di chiamare la funzione: {function_name} con argomenti: {function_args}")
+                print(f"🧠 AI ha scelto di chiamare: {function_name} con {function_args}")
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
-                messages.append({
+                # Aggiungi il risultato del tool alla cronologia di questa interazione
+                current_interaction_messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": function_name,
                     "content": function_response,
                 })
             
-            # Prepara una nuova lista di messaggi per la seconda chiamata
-            api_messages_for_second_call = [{"role": "system", "content": system_prompt}]
-            api_messages_for_second_call.extend(messages[-11:]) # Includi anche il risultato del tool
-
-            # --- SECONDA CHIAMATA ALL'AI ---
+            # Prepara i messaggi per la seconda chiamata con il risultato del tool
+            second_api_messages = [{"role": "system", "content": system_prompt}] + current_interaction_messages
+            
             second_response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=api_messages_for_second_call,
+                messages=second_api_messages,
             )
             response_text = second_response.choices[0].message.content
-            # Aggiorna l'ultimo messaggio dell'assistente con la risposta finale
-            messages[-1] = second_response.choices[0].message.model_dump()
         else:
             response_text = response_message.content
 
-        # Salva la conversazione e invia la risposta
+        # Aggiorna la cronologia principale con i messaggi di questa interazione
+        messages_history.append({"role": "user", "content": incoming_msg})
+        messages_history.append({"role": "assistant", "content": response_text})
+
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
-            {"$set": {"messages": messages, "last_interaction": datetime.now().isoformat()}},
+            {"$set": {"messages": messages_history, "last_interaction": datetime.now().isoformat()}},
             upsert=True
         )
 
