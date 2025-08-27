@@ -79,7 +79,7 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # --- INIZIO CODICE CORRETTO PER CARICARE LA CRONOLOGIA ---
+        # --- CODICE CORRETTO PER CARICARE LA CRONOLOGIA ---
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages = []
         if conversation and 'messages' in conversation:
