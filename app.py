@@ -22,10 +22,7 @@ tools = [
             "description": "Trova gli orari disponibili per un servizio specifico in una data specifica. Da usare quando un utente chiede la disponibilità.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "service_name": {"type": "string", "description": "Il nome del servizio richiesto dall'utente."},
-                    "date": {"type": "string", "description": "La data richiesta, formattata come 'YYYY-MM-DD'. Se l'utente dice 'domani', calcola la data corretta."},
-                },
+                "properties": { "service_name": {"type": "string"}, "date": {"type": "string"} },
                 "required": ["service_name", "date"],
             },
         },
@@ -34,14 +31,10 @@ tools = [
         "type": "function",
         "function": {
             "name": "create_or_update_booking",
-            "description": "Crea un nuovo appuntamento o aggiorna uno esistente. Da usare quando l'utente conferma un orario specifico.",
+            "description": "Crea o aggiorna un appuntamento. Da usare quando l'utente conferma un orario specifico.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "service_name": {"type": "string", "description": "Il nome del servizio da prenotare."},
-                    "date": {"type": "string", "description": "La data della prenotazione, formattata come 'YYYY-MM-DD'."},
-                    "time": {"type": "string", "description": "L'ora della prenotazione, formattata come 'HH:MM'."},
-                },
+                "properties": { "service_name": {"type": "string"}, "date": {"type": "string"}, "time": {"type": "string"} },
                 "required": ["service_name", "date", "time"],
             },
         },
@@ -50,7 +43,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "cancel_booking",
-            "description": "Cancella l'ultimo appuntamento di un utente. Da usare quando l'utente dice che non può venire, ha un imprevisto o vuole disdire.",
+            "description": "Cancella l'ultimo appuntamento di un utente. Da usare se l'utente vuole disdire.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -58,7 +51,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "get_business_info",
-            "description": "Recupera le informazioni generali sul business. Da usare per domande su orari, indirizzo, servizi disponibili o descrizione.",
+            "description": "Recupera le informazioni generali sul business (orari, indirizzo, servizi).",
             "parameters": {"type": "object", "properties": {}},
         }
     }
@@ -76,65 +69,61 @@ def webhook():
         if not business: return Response(status=200)
         business_id = business['_id']
 
-        # 1. Carica la cronologia salvata
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
 
-        # 2. Prepara la sequenza di messaggi per l'API, in modo lineare
-        system_prompt = f"Sei un assistente AI professionale per '{business.get('business_name')}'."
+        system_prompt = f"Sei un assistente AI per '{business.get('business_name')}'. Il tuo unico scopo è gestire prenotazioni e dare informazioni sul business. Sii breve e professionale. Non rispondere a domande non pertinenti."
         
-        api_messages = [{"role": "system", "content": system_prompt}]
-        api_messages.extend(messages_history[-10:]) # Usa solo la cronologia recente
-        api_messages.append({"role": "user", "content": incoming_msg})
+        # Aggiunge il messaggio corrente alla cronologia per questa interazione
+        messages_for_api = messages_history[-10:]
+        messages_for_api.append({"role": "user", "content": incoming_msg})
 
-        # 3. Esegui il ciclo di conversazione con l'AI
+        # Prepara la chiamata con il prompt di sistema
+        api_call_messages = [{"role": "system", "content": system_prompt}] + messages_for_api
+
+        # Esegue il ciclo di conversazione con l'AI
         while True:
             response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=api_messages,
+                messages=api_call_messages,
                 tools=tools,
                 tool_choice="auto",
             )
             response_message = response.choices[0].message
 
             if not response_message.tool_calls:
-                # Se non ci sono strumenti da chiamare, la conversazione è finita
+                # Se non ci sono strumenti, la conversazione finisce
+                final_response_text = response_message.content
                 break
             
-            # Se ci sono strumenti, aggiungi la risposta dell'AI e preparati a eseguirli
-            api_messages.append(response_message)
+            # Se ci sono strumenti, la conversazione continua
+            api_call_messages.append(response_message) # Aggiunge la decisione dell'AI
 
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                function_args['business_id'] = business_id
-                function_args['user_id'] = from_number
-                function_args['user_name'] = user_name
+                function_args.update({
+                    'business_id': business_id,
+                    'user_id': from_number,
+                    'user_name': user_name
+                })
 
-                print(f"🧠 AI ha scelto di chiamare: {function_name}")
+                print(f"🧠 AI chiama: {function_name}")
                 function_to_call = getattr(bot_tools, function_name)
                 function_response = function_to_call(**function_args)
                 
-                # Aggiungi il risultato del tool alla sequenza
-                api_messages.append({
+                api_call_messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": function_name,
                     "content": function_response,
                 })
-
-        # 4. Estrai la risposta finale e aggiorna la cronologia
-        final_response_text = response.choices[0].message.content
         
-        new_history = messages_history + [
-            {"role": "user", "content": incoming_msg},
-            {"role": "assistant", "content": final_response_text}
-        ]
-
+        # Salva la cronologia pulita, senza il prompt di sistema
         db.conversations.update_one(
             {"user_id": from_number, "business_id": business_id},
-            {"$set": {"messages": new_history, "last_interaction": datetime.now().isoformat()}},
+            {"$set": {"messages": api_call_messages[1:], "last_interaction": datetime.now().isoformat()}},
             upsert=True
         )
 
@@ -151,4 +140,4 @@ def webhook():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='host.docker.internal', port=port, debug=True)
