@@ -14,6 +14,8 @@ class CalendarService:
             self.calendar_ids = []
         self.service = None
         self.timezone = pytz.timezone('Europe/Rome')
+        # Cache per eventi recenti
+        self._recent_bookings = []
         if service_account_key:
             self._init_service_account(service_account_key)
 
@@ -41,46 +43,98 @@ class CalendarService:
             else:
                 end_time = self.timezone.localize(datetime.combine(target_date, dtime(hour=end_hour)))
 
-            # --- LOGICA MODIFICATA: Usiamo events.list() invece di freebusy ---
+            # SOLUZIONE 1: Forza refresh con updatedMin per vedere eventi recenti
+            updated_min = (datetime.utcnow() - timedelta(minutes=10)).isoformat() + 'Z'
+            
             events_result = self.service.events().list(
                 calendarId=self.calendar_ids[0], 
                 timeMin=start_time.isoformat(),
                 timeMax=end_time.isoformat(),
+                updatedMin=updated_min,  # NUOVO: forza refresh eventi recenti
                 singleEvents=True,
-                orderBy='startTime'
+                orderBy='startTime',
+                maxResults=100  # NUOVO: aumenta limite eventi
             ).execute()
             
             busy_events = events_result.get('items', [])
             
-            # Formattiamo gli eventi occupati in un formato che la nostra logica capisce
+            # Formattiamo gli eventi occupati
             busy_intervals = []
             for event in busy_events:
+                # Salta eventi cancellati o con status diverso da 'confirmed'
+                if event.get('status') == 'cancelled':
+                    continue
+                    
+                start_dt = event['start'].get('dateTime', event['start'].get('date'))
+                end_dt = event['end'].get('dateTime', event['end'].get('date'))
+                
+                # Gestione eventi all-day
+                if 'T' not in start_dt:
+                    continue  # Salta eventi all-day
+                    
                 busy_intervals.append({
-                    'start': event['start'].get('dateTime', event['start'].get('date')),
-                    'end': event['end'].get('dateTime', event['end'].get('date'))
+                    'start': start_dt,
+                    'end': end_dt
                 })
-            # --- FINE MODIFICA ---
+
+            # SOLUZIONE 2: Aggiungi anche i booking dalla cache locale
+            for recent_booking in self._recent_bookings:
+                if recent_booking['date'] == date:
+                    # Converti in formato datetime per compatibilità
+                    booking_start = self.timezone.localize(
+                        datetime.strptime(f"{recent_booking['date']} {recent_booking['time']}", '%Y-%m-%d %H:%M')
+                    )
+                    booking_end = booking_start + timedelta(minutes=recent_booking['duration'])
+                    
+                    busy_intervals.append({
+                        'start': booking_start.isoformat(),
+                        'end': booking_end.isoformat()
+                    })
 
             def overlaps(s, e, busy_list):
                 for b in busy_list:
-                    bs = datetime.fromisoformat(b["start"])
-                    be = datetime.fromisoformat(b["end"])
-                    if s < be and e > bs:
-                        return True
+                    try:
+                        bs = datetime.fromisoformat(b["start"].replace('Z', '+00:00'))
+                        be = datetime.fromisoformat(b["end"].replace('Z', '+00:00'))
+                        
+                        # Converti a timezone locale se necessario
+                        if bs.tzinfo:
+                            bs = bs.astimezone(self.timezone)
+                            be = be.astimezone(self.timezone)
+                        else:
+                            bs = self.timezone.localize(bs.replace(tzinfo=None))
+                            be = self.timezone.localize(be.replace(tzinfo=None))
+                            
+                        # Controllo overlap con margine di sicurezza (5 minuti)
+                        margin = timedelta(minutes=5)
+                        if s < (be + margin) and e > (bs - margin):
+                            return True
+                    except Exception as parse_error:
+                        print(f"⚠️ Errore parsing data: {parse_error}")
+                        continue
                 return False
 
             slots = []
             cur = start_time
-            step = timedelta(minutes=30)
+            step = timedelta(minutes=30)  # Slot ogni 30 minuti
             dur = timedelta(minutes=duration_minutes)
+            
             while cur + dur <= end_time:
                 e = cur + dur
                 if not overlaps(cur, e, busy_intervals):
-                    slots.append({'start': cur.strftime('%H:%M'), 'end': e.strftime('%H:%M'), 'datetime': cur.isoformat()})
+                    slots.append({
+                        'start': cur.strftime('%H:%M'), 
+                        'end': e.strftime('%H:%M'), 
+                        'datetime': cur.isoformat()
+                    })
                 cur += step
+                
             return slots
+            
         except Exception as e:
             print(f"❌ Errore slot: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def create_appointment(self, date, start_time, duration_minutes, customer_name, customer_phone, service_type="Appuntamento", notes=""):
@@ -97,10 +151,35 @@ class CalendarService:
                 'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Europe/Rome'},
                 'reminders': {'useDefault': False, 'overrides': [{'method':'popup','minutes':60},{'method':'popup','minutes':15}]}
             }
+            
             created_event = self.service.events().insert(calendarId=self.calendar_ids[0], body=event).execute()
-            return created_event.get('id')
+            event_id = created_event.get('id')
+            
+            # SOLUZIONE 3: Aggiungi alla cache locale immediatamente
+            if event_id:
+                self._recent_bookings.append({
+                    'date': date,
+                    'time': start_time,
+                    'duration': duration_minutes,
+                    'event_id': event_id,
+                    'created_at': datetime.now()
+                })
+                
+                # Pulisci cache vecchia (mantieni solo ultimi 20 booking o ultima ora)
+                now = datetime.now()
+                self._recent_bookings = [
+                    b for b in self._recent_bookings 
+                    if (now - b['created_at']).total_seconds() < 3600  # Ultima ora
+                ][-20:]  # Ultimi 20
+                
+                print(f"✅ Evento creato e aggiunto alla cache: {event_id}")
+            
+            return event_id
+            
         except Exception as e:
             print(f"❌ Errore creazione evento: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_appointment(self, event_id):
@@ -129,17 +208,33 @@ class CalendarService:
             updated_event = self.service.events().update(
                 calendarId=self.calendar_ids[0], eventId=event_id, body=event
             ).execute()
+            
+            # Aggiorna anche la cache locale
+            for booking in self._recent_bookings:
+                if booking.get('event_id') == event_id:
+                    booking['date'] = new_date
+                    booking['time'] = new_start_time
+                    booking['duration'] = duration_minutes
+                    break
+            
             return updated_event.get('id')
+            
         except Exception as e:
             print(f"❌ Errore aggiornamento evento: {e}")
             return None
-
 
     def cancel_appointment(self, event_id):
         if not self.service or not self.calendar_ids:
             return False
         try:
             self.service.events().delete(calendarId=self.calendar_ids[0], eventId=event_id).execute()
+            
+            # Rimuovi dalla cache locale
+            self._recent_bookings = [
+                b for b in self._recent_bookings 
+                if b.get('event_id') != event_id
+            ]
+            
             return True
         except Exception as e:
             print(f"❌ Errore cancellazione evento: {e}")

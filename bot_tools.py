@@ -86,6 +86,12 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
         except (ValueError, AttributeError):
             start_hour, end_hour = 9, 18
 
+        # AGGIORNAMENTO: Controlla anche booking nel database locale
+        confirmed_bookings = list(db.bookings.find({
+            "business_id": business_id,
+            "status": "confirmed"
+        }))
+
         # Cerca slot
         slots = calendar_service.get_available_slots(
             date=date, 
@@ -93,6 +99,18 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
             start_hour=start_hour, 
             end_hour=end_hour
         )
+        
+        # FILTRO AGGIUNTIVO: Rimuovi slot che sono già prenotati nel database
+        for booking in confirmed_bookings:
+            try:
+                booking_data = json.loads(booking.get("booking_data", "{}"))
+                if booking_data.get("date") == date:
+                    booked_time = booking_data.get("time")
+                    if booked_time:
+                        # Rimuovi slot che coincidono esattamente con booking esistenti
+                        slots = [s for s in slots if s['start'] != booked_time]
+            except Exception as e:
+                print(f"⚠️ Errore controllo booking esistente: {e}")
         
         if not slots:
             return f"Nessun orario disponibile per {date}. Prova un'altra data."
@@ -107,8 +125,8 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
                     request_date,
                     datetime.strptime(slot['start'], '%H:%M').time()
                 )
-                # Solo slot almeno 5 minuti nel futuro
-                if slot_datetime > now + timedelta(minutes=5):
+                # Solo slot almeno 10 minuti nel futuro (margine maggiore)
+                if slot_datetime > now + timedelta(minutes=10):
                     future_slots.append(slot)
             slots = future_slots
             
@@ -120,6 +138,8 @@ def get_available_slots(business_id: str, service_name: str, date: str, **kwargs
         
     except Exception as e:
         print(f"❌ Errore get_available_slots: {e}")
+        import traceback
+        traceback.print_exc()
         return "Errore temporaneo. Riprova."
 
 def get_next_available_slot(business_id: str, service_name: str, **kwargs):
@@ -148,6 +168,12 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
         except (ValueError, AttributeError):
             start_hour, end_hour = 9, 18
 
+        # Controllo booking esistenti nel database
+        confirmed_bookings = list(db.bookings.find({
+            "business_id": business_id,
+            "status": "confirmed"
+        }))
+
         # Prova oggi
         today = datetime.now().strftime('%Y-%m-%d')
         now = datetime.now()  # Datetime completo per confronto preciso
@@ -159,6 +185,17 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
             end_hour=end_hour
         )
         
+        # Filtra slot già prenotati nel database
+        for booking in confirmed_bookings:
+            try:
+                booking_data = json.loads(booking.get("booking_data", "{}"))
+                if booking_data.get("date") == today:
+                    booked_time = booking_data.get("time")
+                    if booked_time:
+                        slots = [s for s in slots if s['start'] != booked_time]
+            except Exception as e:
+                print(f"⚠️ Errore controllo booking: {e}")
+        
         # CORREZIONE CRITICA: Filtra slot confrontando datetime completi
         if slots:
             future_slots = []
@@ -169,8 +206,8 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
                     datetime.strptime(slot['start'], '%H:%M').time()
                 )
                 
-                # Solo slot almeno 5 minuti nel futuro per sicurezza
-                if slot_datetime > now + timedelta(minutes=5):
+                # Solo slot almeno 10 minuti nel futuro per sicurezza
+                if slot_datetime > now + timedelta(minutes=10):
                     future_slots.append(slot)
             
             if future_slots:
@@ -190,6 +227,17 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
             end_hour=end_hour
         )
         
+        # Filtra slot già prenotati domani
+        for booking in confirmed_bookings:
+            try:
+                booking_data = json.loads(booking.get("booking_data", "{}"))
+                if booking_data.get("date") == tomorrow:
+                    booked_time = booking_data.get("time")
+                    if booked_time:
+                        slots = [s for s in slots if s['start'] != booked_time]
+            except Exception as e:
+                print(f"⚠️ Errore controllo booking domani: {e}")
+        
         if slots:
             first_slot = slots[0]
             return json.dumps({
@@ -202,6 +250,8 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
         
     except Exception as e:
         print(f"❌ Errore get_next_available_slot: {e}")
+        import traceback
+        traceback.print_exc()
         return "Errore nella ricerca. Riprova."
 
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
@@ -243,9 +293,22 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         except (ValueError, AttributeError):
             pass
 
+        # CONTROLLO DOPPIO: Verifica che lo slot sia ancora disponibile
         calendar_service = get_calendar_service(business_id)
         if not calendar_service:
             return "Calendario non configurato."
+            
+        # Verifica disponibilità in tempo reale
+        available_slots = calendar_service.get_available_slots(
+            date=date,
+            duration_minutes=selected_service['duration'],
+            start_hour=start_hour,
+            end_hour=end_hour
+        )
+        
+        slot_available = any(slot['start'] == time for slot in available_slots)
+        if not slot_available:
+            return f"L'orario {time} non è più disponibile. Controlla gli orari liberi."
 
         # Cerca prenotazione esistente
         last_booking = db.bookings.find_one(
@@ -275,7 +338,7 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
             action = "prenotato"
 
         if not event_id:
-            return f"L'orario {time} non è più disponibile. Verifica gli slot liberi."
+            return f"Errore nella creazione dell'appuntamento. Riprova."
 
         # Salva nel database
         booking_data = {
@@ -290,7 +353,11 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         if last_booking:
             db.bookings.update_one(
                 {"_id": last_booking["_id"]}, 
-                {"$set": {"booking_data": json.dumps(booking_data)}}
+                {"$set": {
+                    "booking_data": json.dumps(booking_data),
+                    "calendar_event_id": event_id,
+                    "updated_at": datetime.now().isoformat()
+                }}
             )
         else:
             db.bookings.insert_one({
@@ -307,6 +374,8 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         
     except Exception as e:
         print(f"❌ Errore booking: {e}")
+        import traceback
+        traceback.print_exc()
         return "Errore nella prenotazione. Riprova."
 
 def cancel_booking(business_id: str, user_id: str, **kwargs):
