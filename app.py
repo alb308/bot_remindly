@@ -80,14 +80,14 @@ def webhook():
         conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
         messages_history = conversation.get('messages', []) if conversation else []
         
-        # Mantieni solo ultimi 8 messaggi per ridurre memory usage
-        if len(messages_history) > 8:
-            messages_history = messages_history[-8:]
+        # Mantieni solo ultimi 6 messaggi per ridurre memory usage
+        if len(messages_history) > 6:
+            messages_history = messages_history[-6:]
 
         # System prompt ottimizzato
         system_prompt = f"""
         Sei un assistente AI per '{business.get('business_name', 'questo business')}'.
-        Parli in modo professionale, gestisci quando lo chiedono una prenotazione e dare info sul business.
+        Parli in modo professionale, gestisci prenotazioni e dai info sul business.
         RISPETTA SEMPRE LE REGOLE
         
         DATA: {datetime.now().strftime('%Y-%m-%d')} - ORA: {datetime.now().strftime('%H:%M')}
@@ -98,27 +98,25 @@ def webhook():
         - "prima possibile" = usa get_next_available_slot
         - Sii breve e diretto
         - Non accettare richieste non correlate alle prenotazioni
+        - NON dire mai "un momento" o "sto elaborando" - rispondi sempre con informazioni utili
         """
         
         # Costruisci messaggi API (limitati per velocità)
         api_messages = [{"role": "system", "content": system_prompt}]
-        api_messages.extend(messages_history[-6:])  # Solo ultimi 6
+        api_messages.extend(messages_history[-4:])  # Solo ultimi 4
         api_messages.append({"role": "user", "content": incoming_msg})
 
-        # Loop AI con timeout stringente
-        max_iterations = 2  # Ridotto drasticamente
-        timeout_seconds = 12  # Timeout molto aggressivo
+        # Loop AI con timeout RIMOSSO - aspettiamo sempre una risposta vera
+        max_iterations = 3  # Massimo 3 iterazioni
         iteration = 0
+        final_response_text = None
         
         while iteration < max_iterations:
             iteration += 1
             
-            # Controllo timeout critico
+            # Log tempo trascorso ma SENZA timeout
             elapsed = time.time() - start_time
-            if elapsed > timeout_seconds:
-                print(f"⏰ TIMEOUT dopo {elapsed:.2f}s")
-                final_response_text = "Elaboro la richiesta, un momento..."
-                break
+            print(f"⏱️ Iterazione {iteration}, tempo: {elapsed:.2f}s")
             
             try:
                 response = openai_client.chat.completions.create(
@@ -126,13 +124,15 @@ def webhook():
                     messages=api_messages, 
                     tools=tools, 
                     tool_choice="auto",
-                    temperature=0.1,  # Ridotta per risposte più deterministiche
-                    max_tokens=300    # Limita lunghezza risposta
+                    temperature=0.1,
+                    max_tokens=300,
+                    timeout=25  # Timeout OpenAI a 25 secondi
                 )
                 response_message = response.choices[0].message
             except Exception as e:
                 print(f"❌ Errore OpenAI: {e}")
-                final_response_text = "Problema tecnico temporaneo, riprova."
+                # INVECE di "sto elaborando", dai una risposta utile
+                final_response_text = "Non riesco a elaborare la richiesta ora. Riprova o contattaci direttamente."
                 break
 
             # Se nessun tool call, abbiamo la risposta finale
@@ -165,11 +165,6 @@ def webhook():
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 
-                # Timeout check per ogni tool call
-                if time.time() - start_time > timeout_seconds:
-                    final_response_text = "Elaboro la richiesta, un momento..."
-                    break
-                
                 try:
                     function_args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
@@ -190,7 +185,7 @@ def webhook():
                         function_response = f"Funzione {function_name} non trovata"
                     except Exception as e:
                         print(f"❌ Errore in {function_name}: {e}")
-                        function_response = "Errore temporaneo nella funzione"
+                        function_response = "Errore nella funzione"
                 
                 api_messages.append({
                     "tool_call_id": tool_call.id, 
@@ -199,9 +194,9 @@ def webhook():
                     "content": str(function_response),
                 })
         
-        # Fallback se non abbiamo risposta finale
-        if 'final_response_text' not in locals():
-            final_response_text = "Un momento, sto elaborando..."
+        # FALLBACK SOLO se proprio non abbiamo risposta
+        if not final_response_text:
+            final_response_text = "Non sono riuscito a completare l'operazione. Riprova o contattaci."
 
         # Salva cronologia (molto limitata)
         messages_to_save = messages_history + [
@@ -209,9 +204,9 @@ def webhook():
             {"role": "assistant", "content": final_response_text}
         ]
         
-        # Mantieni solo ultimi 10 messaggi totali
-        if len(messages_to_save) > 10:
-            messages_to_save = messages_to_save[-10:]
+        # Mantieni solo ultimi 8 messaggi totali
+        if len(messages_to_save) > 8:
+            messages_to_save = messages_to_save[-8:]
         
         # Update database
         try:
@@ -242,10 +237,10 @@ def webhook():
         import traceback
         traceback.print_exc()
         
-        # Risposta di emergenza
+        # Risposta di emergenza UTILE
         try:
             resp = MessagingResponse()
-            resp.message("Problema tecnico, riprova tra poco.")
+            resp.message("Sistema temporaneamente non disponibile. Riprova tra poco o contattaci direttamente.")
             return Response(str(resp), mimetype='text/xml')
         except:
             return Response(status=500)
