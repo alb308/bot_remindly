@@ -255,7 +255,7 @@ def get_next_available_slot(business_id: str, service_name: str, **kwargs):
         return "Errore nella ricerca. Riprova."
 
 def create_or_update_booking(business_id: str, user_id: str, user_name: str, service_name: str, date: str, time: str, **kwargs):
-    """Crea o aggiorna un appuntamento"""
+    """Crea o aggiorna un appuntamento - CANCELLA AUTOMATICAMENTE LE PRENOTAZIONI PRECEDENTI"""
     try:
         # Validazioni base
         business = db.businesses.find_one({"_id": business_id})
@@ -293,12 +293,40 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         except (ValueError, AttributeError):
             pass
 
-        # CONTROLLO DOPPIO: Verifica che lo slot sia ancora disponibile
         calendar_service = get_calendar_service(business_id)
         if not calendar_service:
             return "Calendario non configurato."
             
-        # Verifica disponibilità in tempo reale
+        # CORREZIONE CRITICA: Cancella TUTTE le prenotazioni precedenti dell'utente
+        existing_bookings = list(db.bookings.find({
+            "user_id": user_id, 
+            "business_id": business_id, 
+            "status": "confirmed"
+        }))
+        
+        cancelled_count = 0
+        for old_booking in existing_bookings:
+            try:
+                old_event_id = old_booking.get('calendar_event_id')
+                if old_event_id:
+                    # Cancella dal calendario Google
+                    if calendar_service.cancel_appointment(old_event_id):
+                        # Segna come cancellato nel database
+                        db.bookings.update_one(
+                            {"_id": old_booking["_id"]}, 
+                            {"$set": {
+                                "status": "cancelled_by_new_booking", 
+                                "cancelled_at": datetime.now().isoformat()
+                            }}
+                        )
+                        cancelled_count += 1
+                        print(f"Cancellata prenotazione precedente: {old_event_id}")
+                    else:
+                        print(f"Errore cancellazione prenotazione: {old_event_id}")
+            except Exception as e:
+                print(f"Errore cancellazione booking {old_booking.get('_id')}: {e}")
+        
+        # VERIFICA DISPONIBILITÀ dopo aver cancellato le prenotazioni precedenti
         available_slots = calendar_service.get_available_slots(
             date=date,
             duration_minutes=selected_service['duration'],
@@ -310,37 +338,20 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
         if not slot_available:
             return f"L'orario {time} non è più disponibile. Controlla gli orari liberi."
 
-        # Cerca prenotazione esistente
-        last_booking = db.bookings.find_one(
-            {"user_id": user_id, "business_id": business_id, "status": "confirmed"}, 
-            sort=[("confirmed_at", -1)]
+        # Crea NUOVO appuntamento (sempre nuovo, mai update)
+        event_id = calendar_service.create_appointment(
+            date=date, 
+            start_time=time, 
+            duration_minutes=selected_service['duration'],
+            customer_name=user_name, 
+            customer_phone=user_id, 
+            service_type=service_name
         )
-        
-        if last_booking:
-            # Aggiorna esistente
-            event_id = calendar_service.update_appointment(
-                event_id=last_booking['calendar_event_id'],
-                new_date=date, 
-                new_start_time=time, 
-                duration_minutes=selected_service['duration']
-            )
-            action = "spostato"
-        else:
-            # Crea nuovo
-            event_id = calendar_service.create_appointment(
-                date=date, 
-                start_time=time, 
-                duration_minutes=selected_service['duration'],
-                customer_name=user_name, 
-                customer_phone=user_id, 
-                service_type=service_name
-            )
-            action = "prenotato"
 
         if not event_id:
             return f"Errore nella creazione dell'appuntamento. Riprova."
 
-        # Salva nel database
+        # Salva NUOVO booking nel database
         booking_data = {
             "date": date, 
             "time": time, 
@@ -350,30 +361,24 @@ def create_or_update_booking(business_id: str, user_id: str, user_name: str, ser
             "customer_phone": user_id
         }
         
-        if last_booking:
-            db.bookings.update_one(
-                {"_id": last_booking["_id"]}, 
-                {"$set": {
-                    "booking_data": json.dumps(booking_data),
-                    "calendar_event_id": event_id,
-                    "updated_at": datetime.now().isoformat()
-                }}
-            )
+        db.bookings.insert_one({
+            "user_id": user_id, 
+            "business_id": business_id, 
+            "booking_data": json.dumps(booking_data),
+            "status": "confirmed", 
+            "calendar_event_id": event_id, 
+            "created_at": datetime.now().isoformat(), 
+            "confirmed_at": datetime.now().isoformat()
+        })
+        
+        # Messaggio di conferma con info cancellazioni se necessario
+        if cancelled_count > 0:
+            return f"Prenotazione precedente cancellata automaticamente. Nuovo {service_name} confermato per {date} alle {time}."
         else:
-            db.bookings.insert_one({
-                "user_id": user_id, 
-                "business_id": business_id, 
-                "booking_data": json.dumps(booking_data),
-                "status": "confirmed", 
-                "calendar_event_id": event_id, 
-                "created_at": datetime.now().isoformat(), 
-                "confirmed_at": datetime.now().isoformat()
-            })
-            
-        return f"✅ {service_name.title()} {action} per {date} alle {time}."
+            return f"{service_name.title()} prenotato per {date} alle {time}."
         
     except Exception as e:
-        print(f"❌ Errore booking: {e}")
+        print(f"Errore booking: {e}")
         import traceback
         traceback.print_exc()
         return "Errore nella prenotazione. Riprova."
@@ -412,6 +417,32 @@ def cancel_booking(business_id: str, user_id: str, **kwargs):
     except Exception as e:
         print(f"❌ Errore cancellazione: {e}")
         return "Errore nella cancellazione. Riprova."
+
+def debug_user_bookings(business_id: str, user_id: str, **kwargs):
+    """Funzione di debug per vedere tutte le prenotazioni di un utente"""
+    try:
+        bookings = list(db.bookings.find({
+            "user_id": user_id, 
+            "business_id": business_id
+        }))
+        
+        if not bookings:
+            return "Nessuna prenotazione trovata per questo utente."
+        
+        result = f"Prenotazioni trovate: {len(bookings)}\n\n"
+        for i, booking in enumerate(bookings, 1):
+            booking_data = json.loads(booking.get('booking_data', '{}'))
+            result += f"{i}. Status: {booking.get('status')}\n"
+            result += f"   Data: {booking_data.get('date')} alle {booking_data.get('time')}\n"
+            result += f"   Servizio: {booking_data.get('service_type')}\n"
+            result += f"   Calendar ID: {booking.get('calendar_event_id')}\n"
+            result += f"   Creato: {booking.get('created_at')}\n\n"
+        
+        return result
+        
+    except Exception as e:
+        print(f"Errore debug bookings: {e}")
+        return "Errore nel recuperare le prenotazioni."
 
 def get_business_info(business_id: str, **kwargs):
     """Recupera le informazioni generali sul business"""
