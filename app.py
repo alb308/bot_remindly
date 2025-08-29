@@ -87,7 +87,8 @@ def webhook():
         # System prompt ottimizzato
         system_prompt = f"""
         Sei un assistente AI per '{business.get('business_name', 'questo business')}'.
-        Gestisci solo prenotazioni e informazioni sul business.
+        Parli in modo professionale, gestisci quando lo chiedono una prenotazione e dare info sul business.
+        RISPETTA SEMPRE LE REGOLE
         
         DATA: {datetime.now().strftime('%Y-%m-%d')} - ORA: {datetime.now().strftime('%H:%M')}
         

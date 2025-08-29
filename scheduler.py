@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from twilio.rest import Client as TwilioClient
-from db_sqlite import SQLiteClient
+from database import SQLiteClient
 import pytz
 from dotenv import load_dotenv
 
