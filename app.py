@@ -48,91 +48,116 @@ tools = [
     }
 ]
 
+def create_error_response(message="Servizio temporaneamente non disponibile. Riprova tra poco."):
+    """Crea una risposta di errore standardizzata"""
+    try:
+        resp = MessagingResponse()
+        resp.message(message)
+        return Response(str(resp), mimetype='text/xml', status=200)
+    except Exception:
+        # Fallback estremo
+        return Response(
+            '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Errore del sistema</Message></Response>', 
+            mimetype='text/xml', 
+            status=200
+        )
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     start_time = time.time()
     
     try:
-        # Estrai dati immediatamente
+        # VALIDAZIONE IMMEDIATE DEI DATI
         incoming_msg = request.values.get('Body', '').strip()
         from_number = request.values.get('From', '')
         to_number = request.values.get('To', '')
         user_name = request.values.get('ProfileName', 'Cliente')
 
-        # Log dettagliato per debug
         timestamp = datetime.now().strftime('%H:%M:%S')
-        print(f"🔵 [{timestamp}] WEBHOOK: '{incoming_msg}' da {from_number}")
+        print(f"📱 [{timestamp}] WEBHOOK: '{incoming_msg}' da {from_number}")
         
-        # Risposta immediata se il messaggio è vuoto
-        if not incoming_msg:
-            print("⚠️ Messaggio vuoto, ignoro")
-            return Response(status=200)
+        # CONTROLLO RAPIDO: Se dati essenziali mancano, errore immediato
+        if not incoming_msg or not from_number or not to_number:
+            print("⚠️ Dati webhook incompleti")
+            return create_error_response("Dati messaggio incompleti")
 
-        business = db.businesses.find_one({"twilio_phone_number": to_number})
+        # CONTROLLO BUSINESS CON TIMEOUT
+        try:
+            business = db.businesses.find_one({"twilio_phone_number": to_number})
+        except Exception as db_error:
+            print(f"❌ Errore database: {db_error}")
+            return create_error_response("Errore database temporaneo")
+            
         if not business: 
             print(f"❌ Business non trovato per: {to_number}")
-            return Response(status=200)
+            return create_error_response("Configurazione non trovata")
             
         business_id = business['_id']
         print(f"✅ Business: {business.get('business_name')}")
 
-        # Recupera cronologia conversazione (limitata)
-        conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
-        messages_history = conversation.get('messages', []) if conversation else []
-        
-        # Mantieni solo ultimi 6 messaggi per ridurre memory usage
-        if len(messages_history) > 6:
-            messages_history = messages_history[-6:]
+        # CRONOLOGIA LIMITATA per velocità
+        try:
+            conversation = db.conversations.find_one({"user_id": from_number, "business_id": business_id})
+            messages_history = conversation.get('messages', [])[-4:] if conversation else []
+        except Exception as e:
+            print(f"⚠️ Errore cronologia: {e}")
+            messages_history = []
 
-        # System prompt ottimizzato
+        # SYSTEM PROMPT CONCISO
         system_prompt = f"""
-        Sei un assistente AI per '{business.get('business_name', 'questo business')}'.
-        Parli in modo professionale, gestisci prenotazioni e dai info sul business.
-        RISPETTA SEMPRE LE REGOLE
-        
-        DATA: {datetime.now().strftime('%Y-%m-%d')} - ORA: {datetime.now().strftime('%H:%M')}
-        
-        REGOLE:
-        - "oggi" = {datetime.now().strftime('%Y-%m-%d')}
-        - "domani" = {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
-        - "prima possibile" = usa get_next_available_slot
-        - Sii breve e diretto
-        - Non accettare richieste non correlate alle prenotazioni
-        - NON dire mai "un momento" o "sto elaborando" - rispondi sempre con informazioni utili
-        """
-        
-        # Costruisci messaggi API (limitati per velocità)
-        api_messages = [{"role": "system", "content": system_prompt}]
-        api_messages.extend(messages_history[-4:])  # Solo ultimi 4
-        api_messages.append({"role": "user", "content": incoming_msg})
+Sei un assistente per '{business.get('business_name', 'il business')}' specializzato in prenotazioni.
+Risposte brevi e professionali.
 
-        # Loop AI con timeout RIMOSSO - aspettiamo sempre una risposta vera
-        max_iterations = 3  # Massimo 3 iterazioni
+DATA OGGI: {datetime.now().strftime('%Y-%m-%d')} - ORA: {datetime.now().strftime('%H:%M')}
+DOMANI: {(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')}
+
+REGOLE:
+- "prima possibile" = usa get_next_available_slot
+- Sii conciso e diretto
+- Solo prenotazioni e info business
+- Mai "sto elaborando" o "un momento"
+"""
+        
+        # COSTRUISCI MESSAGGI API (minimo indispensabile)
+        api_messages = [
+            {"role": "system", "content": system_prompt},
+            *messages_history[-3:],  # Solo ultimi 3 messaggi
+            {"role": "user", "content": incoming_msg}
+        ]
+
+        # LOOP AI CON TIMEOUT RIGOROSO
+        max_iterations = 2  # Ridotto a 2 per velocità
         iteration = 0
         final_response_text = None
+        timeout_reached = False
         
-        while iteration < max_iterations:
+        while iteration < max_iterations and not timeout_reached:
             iteration += 1
-            
-            # Log tempo trascorso ma SENZA timeout
             elapsed = time.time() - start_time
+            
+            # TIMEOUT RIGIDO: Se già passati 20 secondi, esci
+            if elapsed > 20:
+                print(f"⏰ TIMEOUT raggiunto: {elapsed:.2f}s")
+                timeout_reached = True
+                break
+            
             print(f"⏱️ Iterazione {iteration}, tempo: {elapsed:.2f}s")
             
             try:
+                # TIMEOUT OPENAI RIDOTTO
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o", 
+                    model="gpt-4o-mini",  # Modello più veloce
                     messages=api_messages, 
                     tools=tools, 
                     tool_choice="auto",
                     temperature=0.1,
-                    max_tokens=300,
-                    timeout=25  # Timeout OpenAI a 25 secondi
+                    max_tokens=200,  # Ridotto per velocità
+                    timeout=15  # Timeout ridotto a 15 secondi
                 )
                 response_message = response.choices[0].message
             except Exception as e:
                 print(f"❌ Errore OpenAI: {e}")
-                # INVECE di "sto elaborando", dai una risposta utile
-                final_response_text = "Non riesco a elaborare la richiesta ora. Riprova o contattaci direttamente."
+                final_response_text = "Non riesco a elaborare la richiesta. Contattaci direttamente."
                 break
 
             # Se nessun tool call, abbiamo la risposta finale
@@ -140,14 +165,11 @@ def webhook():
                 final_response_text = response_message.content
                 break
             
-            # Aggiungi messaggio assistant
+            # GESTIONE TOOL CALLS VELOCE
             assistant_message = {
                 "role": "assistant",
                 "content": response_message.content or "",
-            }
-            
-            if response_message.tool_calls:
-                assistant_message["tool_calls"] = [
+                "tool_calls": [
                     {
                         "id": tool_call.id,
                         "type": "function",
@@ -158,34 +180,34 @@ def webhook():
                     }
                     for tool_call in response_message.tool_calls
                 ]
-            
+            }
             api_messages.append(assistant_message)
 
-            # Esegui tool calls
+            # ESECUZIONE TOOLS CON TIMEOUT
             for tool_call in response_message.tool_calls:
+                # Controllo timeout prima di ogni tool call
+                if time.time() - start_time > 22:
+                    timeout_reached = True
+                    break
+                    
                 function_name = tool_call.function.name
                 
                 try:
                     function_args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    function_response = "Errore nei parametri della funzione"
-                else:
                     function_args.update({
                         'business_id': business_id, 
                         'user_id': from_number, 
                         'user_name': user_name
                     })
 
-                    print(f"🛠️ Chiamo: {function_name}")
+                    print(f"🛠️ Eseguo: {function_name}")
                     
-                    try:
-                        function_to_call = getattr(bot_tools, function_name)
-                        function_response = function_to_call(**function_args)
-                    except AttributeError:
-                        function_response = f"Funzione {function_name} non trovata"
-                    except Exception as e:
-                        print(f"❌ Errore in {function_name}: {e}")
-                        function_response = "Errore nella funzione"
+                    function_to_call = getattr(bot_tools, function_name)
+                    function_response = function_to_call(**function_args)
+                    
+                except Exception as e:
+                    print(f"❌ Errore in {function_name}: {e}")
+                    function_response = "Errore nella funzione"
                 
                 api_messages.append({
                     "tool_call_id": tool_call.id, 
@@ -194,22 +216,23 @@ def webhook():
                     "content": str(function_response),
                 })
         
-        # FALLBACK SOLO se proprio non abbiamo risposta
-        if not final_response_text:
-            final_response_text = "Non sono riuscito a completare l'operazione. Riprova o contattaci."
+        # GESTIONE FINALE DELLA RISPOSTA
+        if timeout_reached:
+            final_response_text = "Richiesta in elaborazione. Ti risponderemo al più presto."
+        elif not final_response_text:
+            final_response_text = "Non sono riuscito a completare l'operazione. Riprova."
 
-        # Salva cronologia (molto limitata)
-        messages_to_save = messages_history + [
-            {"role": "user", "content": incoming_msg},
-            {"role": "assistant", "content": final_response_text}
-        ]
-        
-        # Mantieni solo ultimi 8 messaggi totali
-        if len(messages_to_save) > 8:
-            messages_to_save = messages_to_save[-8:]
-        
-        # Update database
+        # VALIDAZIONE LUNGHEZZA RISPOSTA
+        if len(final_response_text) > 1600:  # Limite WhatsApp
+            final_response_text = final_response_text[:1597] + "..."
+
+        # SALVATAGGIO DATABASE ASINCRONO (senza bloccare la risposta)
         try:
+            messages_to_save = messages_history + [
+                {"role": "user", "content": incoming_msg},
+                {"role": "assistant", "content": final_response_text}
+            ][-6:]  # Solo ultimi 6 messaggi
+            
             db.conversations.update_one(
                 {"user_id": from_number, "business_id": business_id},
                 {
@@ -221,15 +244,25 @@ def webhook():
                 upsert=True
             )
         except Exception as e:
-            print(f"⚠️ Errore salvataggio DB: {e}")
+            print(f"⚠️ Errore salvataggio DB (non critico): {e}")
 
         elapsed = time.time() - start_time
-        print(f"📤 [{elapsed:.2f}s] Risposta: '{final_response_text[:50]}...'")
+        print(f"📤 [{elapsed:.2f}s] Invio risposta: '{final_response_text[:50]}...'")
         
-        # Risposta WhatsApp
-        resp = MessagingResponse()
-        resp.message(final_response_text)
-        return Response(str(resp), mimetype='text/xml')
+        # RISPOSTA TWIML ROBUSTA
+        try:
+            resp = MessagingResponse()
+            msg = resp.message()
+            msg.body(final_response_text)
+            
+            response_xml = str(resp)
+            print(f"📋 TwiML generato: {response_xml[:200]}...")
+            
+            return Response(response_xml, mimetype='text/xml', status=200)
+            
+        except Exception as twiml_error:
+            print(f"❌ Errore creazione TwiML: {twiml_error}")
+            return create_error_response("Errore formattazione risposta")
 
     except Exception as e:
         elapsed = time.time() - start_time
@@ -237,27 +270,32 @@ def webhook():
         import traceback
         traceback.print_exc()
         
-        # Risposta di emergenza UTILE
-        try:
-            resp = MessagingResponse()
-            resp.message("Sistema temporaneamente non disponibile. Riprova tra poco o contattaci direttamente.")
-            return Response(str(resp), mimetype='text/xml')
-        except:
-            return Response(status=500)
+        return create_error_response("Sistema temporaneamente non disponibile")
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return {
-        "status": "ok", 
+        "status": "healthy", 
         "timestamp": datetime.now().isoformat(),
-        "uptime": "Railway bot attivo"
-    }
+        "service": "WhatsApp Bot v2.0"
+    }, 200
 
 @app.route('/test', methods=['GET'])
 def test():
-    return f"Server OK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    return f"🤖 Bot OK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 200
+
+# GESTIONE ERRORI GLOBALE
+@app.errorhandler(500)
+def handle_500(e):
+    print(f"❌ Errore 500: {e}")
+    return create_error_response("Errore interno del server")
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"❌ Eccezione non gestita: {e}")
+    return create_error_response("Errore imprevisto")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Bot starting on port {port}")
+    print(f"🚀 WhatsApp Bot v2.0 avvio su porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
